@@ -1,0 +1,559 @@
+/* =============================================================================
+   LASO Search - Mobile Styles
+   Activated by body.is-mobile (set via JS ontouchstart detection)
+   ============================================================================= */
+
+/* ---- Lock viewport ---- */
+body.is-mobile {
+    overflow: hidden;
+    height: 100%;
+    width: 100%;
+}
+
+/* ---- Kill ALL tap / focus highlights on mobile ---- */
+body.is-mobile *,
+body.is-mobile a,
+body.is-mobile a *,
+body.is-mobile [role="button"],
+body.is-mobile [role="button"] * {
+    -webkit-tap-highlight-color: transparent !important;
+}
+
+body.is-mobile button:focus,
+body.is-mobile select:focus,
+body.is-mobile input:focus,
+body.is-mobile a:focus,
+body.is-mobile [role="button"]:focus {
+    outline: none;
+}
+
+body.is-mobile select:focus,
+body.is-mobile input:focus {
+    box-shadow: none;
+}
+
+/* ---- 3D raised buttons (newsway-style bottom-ledge) ---- */
+body.is-mobile .header-actions > .btn {
+    border: 2px solid var(--border-color);
+    box-shadow: 0 4px 0 var(--border-color);
+    transform: translateY(0);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+body.is-mobile .header-actions > .draw-btn-wrapper > .btn {
+    border: 2px solid var(--border-color);
+    box-shadow: 0 4px 0 var(--border-color);
+    transform: translateY(0);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+body.is-mobile .header-actions > .btn.btn-primary {
+    border-color: var(--primary-dark);
+    box-shadow: 0 4px 0 var(--primary-dark);
+}
+
+body.is-mobile .header-actions > .btn.btn-secondary {
+    border-color: var(--border-color);
+    box-shadow: 0 4px 0 var(--border-color);
+}
+
+body.is-mobile .header-actions > .draw-btn-wrapper > .btn.btn-secondary {
+    border-color: var(--border-color);
+    box-shadow: 0 4px 0 var(--border-color);
+}
+
+body.is-mobile .search-btn {
+    border: 2px solid var(--primary-dark);
+    box-shadow: 0 4px 0 var(--primary-dark);
+    transform: translateY(0);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+body.is-mobile .filter-sort-controls #clear-filters-btn {
+    border: 2px solid var(--border-color);
+    box-shadow: 0 4px 0 var(--border-color);
+    transform: translateY(-2px); /* shift up half the 4px shadow so button+shadow is visually centered */
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Pressed state — newsway 3D press-down (JS .pressed class only; preventDefault
+   on touchstart stops the browser from ever applying :active/:hover/:focus) */
+body.is-mobile .header-actions > .btn.pressed {
+    transform: translateY(2px);
+}
+
+body.is-mobile .header-actions > .draw-btn-wrapper > .btn.pressed {
+    transform: translateY(2px);
+}
+
+body.is-mobile .header-actions > .btn.btn-primary.pressed {
+    box-shadow: 0 2px 0 var(--primary-dark);
+}
+
+body.is-mobile .header-actions > .btn.btn-secondary.pressed,
+body.is-mobile .header-actions > .btn.btn-outline.pressed {
+    box-shadow: 0 2px 0 var(--border-color);
+}
+
+body.is-mobile .header-actions > .draw-btn-wrapper > .btn.btn-secondary.pressed,
+body.is-mobile .header-actions > .draw-btn-wrapper > .btn.btn-outline.pressed {
+    box-shadow: 0 2px 0 var(--border-color);
+}
+
+body.is-mobile .search-btn.pressed {
+    transform: translateY(2px);
+    box-shadow: 0 2px 0 var(--primary-dark);
+}
+
+body.is-mobile .filter-sort-controls #clear-filters-btn.pressed {
+    transform: translateY(0px); /* -2px baseline + 2px press-down */
+    box-shadow: 0 2px 0 var(--border-color);
+}
+
+/* Kill hover background shifts on mobile (prevents sticky :hover from darkening buttons) */
+body.is-mobile .btn-primary:hover,
+body.is-mobile .btn-primary:active {
+    background: var(--primary-color);
+}
+
+body.is-mobile .btn-secondary:hover,
+body.is-mobile .btn-secondary:active {
+    background: var(--bg-tertiary);
+}
+
+body.is-mobile .btn-secondary.active:hover,
+body.is-mobile .btn-secondary.active:active {
+    background: var(--accent-color);
+}
+
+body.is-mobile .btn-outline:hover,
+body.is-mobile .btn-outline:active {
+    color: var(--text-secondary);
+    border-color: var(--border-color);
+    background: var(--bg-secondary);
+}
+
+/* Kill blue border on sort dropdown focus */
+body.is-mobile .sort-select:focus {
+    border-color: var(--border-color);
+    box-shadow: none;
+}
+
+body.is-mobile .app-container {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+}
+
+/* ================================================================
+   Header: two rows
+   Row 1 — logo icon + search bar
+   Row 2 — draw, LASO search, delete, filter/sort
+   ================================================================ */
+body.is-mobile .header {
+    --row-h: 40px;
+    flex-wrap: wrap;
+    padding: 6px 10px;
+    gap: 4px 8px;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+body.is-mobile .logo {
+    order: 1;
+    flex-shrink: 0;
+}
+
+body.is-mobile .logo span {
+    display: none;
+}
+
+body.is-mobile .search-box {
+    padding: 0 10px;
+    height: var(--row-h);
+    position: relative;
+    overflow: visible;
+}
+
+body.is-mobile .search-box:focus-within {
+    box-shadow: none;
+}
+
+body.is-mobile .search-box input {
+    font-size: 16px;
+}
+
+/* Pull search button out of search-box on mobile */
+body.is-mobile .search-box .search-btn {
+    position: absolute;
+    right: -48px;
+    top: 50%;
+    transform: translateY(calc(-50% - 2px)); /* compensate for the 4px drop shadow so the visual center aligns with the textbox */
+    width: var(--row-h);
+    height: calc(var(--row-h) - 4px); /* subtract 4px shadow offset so the visual height matches the row */
+    border-radius: var(--radius-sm);
+}
+
+body.is-mobile .search-box .search-btn.pressed {
+    transform: translateY(calc(-50% - 2px + 2px));
+    box-shadow: 0 2px 0 var(--primary-dark);
+}
+
+body.is-mobile .search-container {
+    order: 2;
+    flex: 1;
+    min-width: 0;
+    max-width: none;
+    position: relative;
+    margin-right: 48px;
+}
+
+/* Actions row: force to row 2, full width, wraps so filters get row 3 */
+body.is-mobile .header-actions {
+    order: 3;
+    width: 100%;
+    flex-shrink: 0;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    position: relative;
+}
+
+/* Filter/sort row 3 — own line beneath buttons */
+body.is-mobile .filter-sort-controls {
+    display: flex;
+    flex-basis: 100%;
+    order: 10;
+    min-width: 0;
+    height: 68px;
+    gap: 6px;
+    align-items: center;
+    border-radius: var(--radius-sm);
+}
+
+body.is-mobile .filter-input {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+    height: calc(100% - 10px);
+    font-size: 16px;
+    box-sizing: border-box;
+}
+
+body.is-mobile .filter-input {
+    padding-top: 14px;
+    padding-bottom: 14px;
+}
+
+body.is-mobile .sort-select {
+    font-size: 0.85rem;
+    padding: 6px 8px;
+    height: calc(100% - 10px);
+    max-width: none;
+    box-sizing: border-box;
+}
+
+body.is-mobile .filter-sort-controls #clear-filters-btn {
+    height: calc(100% - 14px); /* subtract 4px shadow so button+shadow matches other elements' visual height */
+    padding: 6px 12px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* Action buttons: row 2, equal width with labels */
+body.is-mobile .header-actions > .btn {
+    flex: 1;
+    height: var(--row-h);
+    justify-content: center;
+    align-items: center;
+    padding: 0 10px;
+    font-size: 0.85rem;
+    box-sizing: border-box;
+}
+
+/* Wrapped draw button should size like the other action buttons */
+body.is-mobile .header-actions > .draw-btn-wrapper {
+    flex: 1;
+    height: var(--row-h);
+    display: flex;
+    position: static;
+}
+
+body.is-mobile .draw-btn-tooltip {
+    left: 0;
+    right: 0;
+    top: calc(var(--row-h) + 6px);
+    transform: none;
+    max-width: none;
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+}
+
+body.is-mobile .header-actions > .draw-btn-wrapper > .btn {
+    flex: 1;
+    height: 100%;
+    justify-content: center;
+    align-items: center;
+    padding: 0 10px;
+    font-size: 0.85rem;
+    box-sizing: border-box;
+}
+
+/* Preserve 3D shadow when draw button is active (color change shouldn't remove ledge) */
+body.is-mobile .header-actions > .draw-btn-wrapper > .btn.btn-secondary.active {
+    border-color: var(--border-color);
+    box-shadow: 0 4px 0 var(--border-color);
+}
+
+body.is-mobile .header-actions > .draw-btn-wrapper > .btn.btn-secondary.active.pressed {
+    box-shadow: 0 2px 0 var(--border-color);
+}
+
+body.is-mobile .header-actions > .btn span {
+    display: inline;
+}
+
+/* ---- Main content: map fills remaining space ---- */
+body.is-mobile .main-content {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+}
+
+body.is-mobile .map-container {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+body.is-mobile #map {
+    width: 100%;
+    height: 100%;
+}
+
+/* ================================================================
+   Results bottom sheet — three states:
+   1) Hidden  (default)              → translateY(100%)
+   2) Peeked  (body.results-peeked)  → shows lip only
+   3) Open    (body.results-open)    → translateY(0)
+   ================================================================ */
+body.is-mobile .results-sidebar {
+    position: fixed;
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: none;
+    height: 55vh;
+    border-left: none;
+    border-top: none;
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
+    z-index: 2000;
+    transform: translateY(100%);
+    transition: transform 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Peeked state: only the header lip is visible */
+body.is-mobile.results-peeked .results-sidebar {
+    transform: translateY(calc(100% - 52px));
+}
+
+/* Open state MUST beat peeked — same depth + later in source.
+   Default open = half-height (50% of sidebar pushed down = bottom half visible). */
+body.is-mobile.results-open .results-sidebar.open {
+    transform: translateY(50%);
+}
+
+/* Fully expanded (dragged all the way up) */
+body.is-mobile.results-expanded .results-sidebar.open {
+    transform: translateY(0);
+}
+
+/* ---- Sidebar header / peek lip ---- */
+body.is-mobile .sidebar-header {
+    padding: 14px 16px 8px;
+    position: relative;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    border-radius: 16px 16px 0 0;
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+}
+
+/* Drag-handle pill — tappable element at top center */
+body.is-mobile .sidebar-header::before {
+    display: none;
+}
+
+body.is-mobile .drag-handle {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 60px;
+    height: 18px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    z-index: 10;
+}
+
+body.is-mobile .drag-handle::after {
+    content: '';
+    position: absolute;
+    top: 5px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 36px;
+    height: 5px;
+    background: var(--text-tertiary);
+    border-radius: 3px;
+}
+
+body.is-mobile .sidebar-header h3 {
+    font-size: 0.95rem;
+}
+
+
+/* Hide close X on mobile — tap header to toggle */
+body.is-mobile .close-btn {
+    display: none;
+}
+
+body.is-mobile .sidebar-content {
+    padding: 8px 12px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ---- Place cards: compact ---- */
+body.is-mobile .place-card {
+    padding: 10px;
+}
+
+body.is-mobile .place-card:hover {
+    transform: none;
+    background: var(--bg-secondary);
+    border-color: transparent;
+    box-shadow: none;
+}
+
+body.is-mobile .place-card.active {
+    border-color: var(--primary-color);
+    background: rgba(66, 133, 244, 0.05);
+}
+
+body.is-mobile .place-name {
+    font-size: 0.9rem;
+}
+
+body.is-mobile .place-address {
+    font-size: 0.8rem;
+}
+
+body.is-mobile .maps-buttons {
+    flex-direction: row;
+    gap: 6px;
+}
+
+body.is-mobile .map-btn {
+    width: 64px;
+    height: 34px;
+    font-size: 0.72rem;
+    padding: 0 6px;
+}
+
+/* ---- Drawing overlay: compact, centered ---- */
+body.is-mobile .drawing-overlay {
+    top: 10px;
+    padding: 10px 14px;
+    max-width: 85%;
+}
+
+body.is-mobile .drawing-instructions i {
+    font-size: 1.4rem;
+}
+
+body.is-mobile .drawing-instructions p {
+    font-size: 0.8rem;
+}
+
+/* ---- Zoom level indicator ---- */
+body.is-mobile .zoom-level-indicator {
+    top: 10px;
+    left: 50px;
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    gap: 4px;
+}
+
+body.is-mobile .zoom-level-indicator .zoom-label {
+    display: none; /* Hide "Zoom" label on mobile to save space */
+}
+
+body.is-mobile .zoom-level-indicator .zoom-value {
+    font-size: 0.85rem;
+    min-width: 16px;
+}
+
+body.is-mobile .zoom-level-indicator .zoom-min-hint {
+    font-size: 0.65rem;
+}
+
+body.is-mobile .zoom-level-indicator.fit-zoom .zoom-min-hint {
+    display: inline;
+}
+
+/* ---- Status indicator ---- */
+body.is-mobile .status-indicator {
+    bottom: 10px;
+    left: 10px;
+    padding: 5px 10px;
+    font-size: 0.75rem;
+    transition: bottom 0.3s ease-in-out;
+}
+
+/* Nudge status up when peek lip is showing */
+body.is-mobile.results-peeked .status-indicator {
+    bottom: 62px;
+}
+
+/* Nudge status up when sheet is fully open */
+body.is-mobile.results-open .status-indicator {
+    bottom: calc(55vh + 10px);
+}
+
+/* ---- Cooldown indicator ---- */
+body.is-mobile #cooldown-indicator {
+    bottom: 10px;
+    left: auto;
+    right: 10px;
+    font-size: 0.7rem;
+    padding: 4px 8px 4px 6px;
+    transition: bottom 0.3s ease-in-out;
+}
+
+body.is-mobile.results-peeked #cooldown-indicator {
+    bottom: 62px;
+}
+
+body.is-mobile.results-open #cooldown-indicator {
+    bottom: calc(55vh + 10px);
+}
+
+/* =============================================================================
+   Tablet Breakpoint (768px - 1024px) — kept as media query (not touch-based)
+   ============================================================================= */
+
+@media (min-width: 769px) and (max-width: 1024px) {
+    .results-sidebar {
+        width: 320px;
+    }
+}

@@ -1,0 +1,10 @@
+name = "laso-api-proxy"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+# Non-secret config (if needed in future)
+
+# The GOOGLE_PLACES_API_KEY is stored as a secret via:
+#   wrangler secret put GOOGLE_PLACES_API_KEY
+# Never put it here.

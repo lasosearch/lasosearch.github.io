@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LASO Search - Find Businesses in Your Area</title>
+    <link rel="stylesheet" href="common.css">
+    <link rel="stylesheet" href="pc.css">
+    <link rel="stylesheet" href="mobile.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <span>LASO Search</span>
+            </div>
+            <div class="search-container">
+                <div class="search-box">
+                    <i class="fas fa-search"></i>
+                    <input type="text" id="address-input" placeholder="Enter an address or location..." autocomplete="off">
+                    <button id="search-btn" class="search-btn">
+                        <i class="fas fa-arrow-right"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="header-actions">
+                <div class="filter-sort-controls">
+                    <input
+                        type="text"
+                        id="place-filter"
+                        class="filter-input"
+                        list="place-filter-options"
+                        placeholder="Filter"
+                        autocomplete="new-password"
+                        autocorrect="off"
+                        autocapitalize="off"
+                        spellcheck="false"
+                    >
+                    <datalist id="place-filter-options"></datalist>
+                    <select id="sort-select" class="sort-select" aria-label="Sort results">
+                        <option value="distance" selected>Distance</option>
+                        <option value="alphabetical">A–Z</option>
+                        <option value="rating">Rating</option>
+                    </select>
+                    <button id="clear-filters-btn" class="btn btn-outline btn-sm" type="button" title="Clear filters">
+                        <span>Clear</span>
+                    </button>
+                </div>
+                <div class="draw-btn-wrapper" id="draw-btn-wrapper">
+                    <button id="drawing-toggle" class="btn btn-secondary">
+                        <i class="fas fa-pencil-alt"></i>
+                        <span>Draw</span>
+                    </button>
+                    <div class="draw-btn-tooltip" id="draw-btn-tooltip" role="tooltip" aria-hidden="true"></div>
+                </div>
+                <button id="lasosearch-btn" class="btn btn-primary">
+                    <i class="fas fa-store"></i>
+                    <span>Draw Search</span>
+                </button>
+                <button id="clear-btn" class="btn btn-outline">
+                    <i class="fas fa-trash-alt"></i>
+                    <span>Clear All</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Map Container -->
+            <div class="map-container">
+                <div id="map"></div>
+
+                <!-- Drawing Instructions Overlay -->
+                <div id="drawing-overlay" class="drawing-overlay hidden">
+                    <div class="drawing-instructions">
+                        <i class="fas fa-pencil-alt"></i>
+                        <p>Click on the map to start drawing. Click to add points. Double-click or click first point to close shape.</p>
+                        <button id="cancel-drawing" class="btn btn-sm btn-outline">Cancel</button>
+                    </div>
+                </div>
+
+                <!-- Zoom Level Indicator (positioned near Leaflet zoom controls) -->
+                <div id="zoom-level-indicator" class="zoom-level-indicator">
+                    <span class="zoom-label">Zoom</span>
+                    <span id="zoom-level-value" class="zoom-value">0</span>
+                    <span class="zoom-min-hint" id="zoom-min-hint">(need 2 to draw)</span>
+                </div>
+
+                <!-- Status Indicator -->
+                <div id="status-indicator" class="status-indicator">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Ready</span>
+                </div>
+            </div>
+
+            <!-- Results Sidebar -->
+            <aside class="results-sidebar" id="results-sidebar">
+                <div class="sidebar-header">
+                    <div class="drag-handle" id="drag-handle"></div>
+                    <h3><i class="fas fa-list"></i> Search Results</h3>
+                    <span id="result-count" class="result-count">0</span>
+                    <button id="close-sidebar" class="close-btn">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="sidebar-content">
+                    <div id="results-list" class="results-list">
+                        <div class="empty-state">
+                            <i class="fas fa-map-marked-alt"></i>
+                            <p>Draw a shape on the map and click LASO Search to find businesses</p>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- Loading Overlay -->
+        <div id="loading-overlay" class="loading-overlay hidden">
+            <div class="spinner">
+                <div class="double-bounce1"></div>
+                <div class="double-bounce2"></div>
+            </div>
+            <p>Searching for businesses...</p>
+        </div>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

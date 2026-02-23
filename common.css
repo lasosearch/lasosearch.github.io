@@ -1,0 +1,1028 @@
+/* =============================================================================
+   LASO Search - Common Styles (Variables, Reset, Base)
+   ============================================================================= */
+
+:root {
+    --primary-color: #4285f4;
+    --primary-dark: #3367d6;
+    --primary-light: #8ab4f8;
+    --secondary-color: #34a853;
+    --accent-color: #fbbc04;
+    --danger-color: #ea4335;
+    --text-primary: #202124;
+    --text-secondary: #5f6368;
+    --text-tertiary: #80868b;
+    --bg-primary: #ffffff;
+    --bg-secondary: #f8f9fa;
+    --bg-tertiary: #e8eaed;
+    --border-color: #dadce0;
+    --shadow-sm: 0 1px 2px 0 rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+    --shadow-md: 0 4px 6px -1px rgba(60, 64, 67, 0.3), 0 2px 4px -1px rgba(60, 64, 67, 0.15);
+    --shadow-lg: 0 10px 15px -3px rgba(60, 64, 67, 0.3), 0 4px 6px -2px rgba(60, 64, 67, 0.15);
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --transition: all 0.2s ease-in-out;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+ html {
+     height: 100%;
+     width: 100%;
+ }
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    color: var(--text-primary);
+    background-color: var(--bg-secondary);
+    overflow: hidden;
+    height: 100%;
+    width: 100%;
+}
+
+/* =============================================================================
+   App Container
+   ============================================================================= */
+
+.app-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+}
+
+/* =============================================================================
+   Logo
+   ============================================================================= */
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--primary-color);
+    flex-shrink: 0;
+}
+
+.logo i {
+    font-size: 1.5rem;
+}
+
+/* =============================================================================
+   Search Box
+   ============================================================================= */
+
+.search-box {
+    display: flex;
+    align-items: center;
+    background: var(--bg-secondary);
+    border: 2px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: 8px 16px;
+    transition: var(--transition);
+}
+
+.search-box:focus-within {
+    border-color: var(--primary-color);
+    background: var(--bg-primary);
+    box-shadow: 0 0 0 4px rgba(66, 133, 244, 0.1);
+}
+
+.search-box i {
+    color: var(--text-tertiary);
+    font-size: 1rem;
+    margin-right: 12px;
+}
+
+.search-box input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    font-size: 1rem;
+    color: var(--text-primary);
+    outline: none;
+}
+
+.search-box input::placeholder {
+    color: var(--text-tertiary);
+}
+
+.search-btn {
+    background: var(--primary-color);
+    border: none;
+    color: white;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+}
+
+.search-btn i {
+    color: white;
+    margin-right: 0;
+}
+
+.search-btn:hover {
+    background: var(--primary-dark);
+}
+
+/* Leaflet zoom controls — center text */
+.leaflet-control-zoom a {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 18px !important;
+    line-height: 1 !important;
+}
+
+/* Zoom-fit button — matches +/- size, separated by a gap */
+.leaflet-control-zoom-fit {
+    margin-top: 8px !important;
+}
+
+.leaflet-control-zoom-fit-btn {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 30px !important;
+    height: 30px !important;
+    font-size: 16px !important;
+    line-height: 1 !important;
+    color: #333 !important;
+    cursor: pointer;
+}
+
+.leaflet-control-zoom-fit-btn:hover {
+    background-color: #f4f4f4 !important;
+}
+
+.leaflet-control-zoom-fit-btn.disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.leaflet-control-zoom-fit-btn.no-polygon {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.zoomfit-tooltip {
+    position: absolute;
+    left: calc(100% + 8px);
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(32, 33, 36, 0.92);
+    color: #fff;
+    font-size: 0.8rem;
+    line-height: 1.3;
+    padding: 8px 10px;
+    border-radius: 8px;
+    box-shadow: var(--shadow-md);
+    white-space: nowrap;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease, visibility 0.15s ease;
+    z-index: 2000;
+}
+
+.leaflet-control-zoom-fit.tooltip-enabled:hover .zoomfit-tooltip {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+.leaflet-control-zoom-fit.tooltip-visible .zoomfit-tooltip {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+.leaflet-control-zoom-fit.tooltip-dismissed .zoomfit-tooltip {
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
+.leaflet-control-attribution {
+    opacity: 0 !important;
+}
+
+/* =============================================================================
+   Zoom Level Indicator
+   ============================================================================= */
+
+.zoom-level-indicator {
+    position: absolute;
+    top: 10px;
+    left: 55px; /* Position to the right of Leaflet zoom controls */
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg-primary);
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    font-size: 0.85rem;
+    z-index: 1000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+}
+
+.zoom-level-indicator.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.zoom-level-indicator .zoom-label {
+    color: var(--text-tertiary);
+    font-weight: 500;
+}
+
+.zoom-level-indicator .zoom-value {
+    font-weight: 700;
+    color: var(--text-primary);
+    min-width: 20px;
+    text-align: center;
+}
+
+/* Color-code the zoom value based on whether drawing is allowed */
+.zoom-level-indicator.can-draw .zoom-value {
+    color: var(--secondary-color);
+}
+
+.zoom-level-indicator.cannot-draw .zoom-value {
+    color: var(--danger-color);
+}
+
+.zoom-level-indicator .zoom-min-hint {
+    font-size: 0.75rem;
+    color: var(--text-tertiary);
+    font-style: italic;
+}
+
+/* Hide hint when zoom level is sufficient */
+.zoom-level-indicator.can-draw .zoom-min-hint {
+    display: none;
+}
+
+/* Fit-zoom: show hint and use primary color for crosshairs symbol */
+.zoom-level-indicator.fit-zoom .zoom-value {
+    color: var(--primary-color);
+}
+
+.zoom-level-indicator.fit-zoom .zoom-min-hint {
+    display: inline;
+    color: var(--primary-color);
+}
+
+/* =============================================================================
+   Buttons
+   ============================================================================= */
+
+.btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 20px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--transition);
+    white-space: nowrap;
+}
+
+.btn-primary {
+    background: var(--primary-color);
+    color: white;
+}
+
+.btn-primary:hover {
+    background: var(--primary-dark);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+}
+
+.btn-secondary {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.btn-secondary:hover {
+    background: var(--border-color);
+}
+
+.btn-secondary.active {
+    background: var(--accent-color);
+    color: var(--text-primary);
+}
+
+/* =============================================================================
+   Draw Button Tooltip
+   ============================================================================= */
+
+.draw-btn-wrapper {
+    position: relative;
+    display: inline-flex;
+}
+
+/* Keep draw button width stable when label changes (Draw/Cancel) */
+#drawing-toggle {
+    width: 110px;
+    justify-content: center;
+}
+
+.draw-btn-wrapper .btn[disabled],
+.draw-btn-wrapper .btn.is-disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.draw-btn-tooltip {
+    position: absolute;
+    left: 50%;
+    top: calc(100% + 8px);
+    transform: translateX(-50%);
+    background: rgba(32, 33, 36, 0.92);
+    color: #fff;
+    font-size: 0.8rem;
+    line-height: 1.3;
+    padding: 8px 10px;
+    border-radius: 8px;
+    box-shadow: var(--shadow-md);
+    max-width: 220px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease, visibility 0.15s ease;
+    z-index: 2000;
+}
+
+.draw-tooltip-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.draw-tooltip-close {
+    background: none;
+    border: none;
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 15px;
+    line-height: 1;
+    padding: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: color 0.15s ease, background 0.15s ease;
+    pointer-events: auto;
+}
+
+.draw-tooltip-close:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.draw-btn-wrapper.tooltip-enabled:hover .draw-btn-tooltip {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+.draw-btn-wrapper.tooltip-visible .draw-btn-tooltip {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+.draw-btn-wrapper.tooltip-dismissed .draw-btn-tooltip {
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
+.btn-outline {
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+}
+
+.btn-outline:hover {
+    background: var(--bg-secondary);
+    color: var(--danger-color);
+    border-color: var(--danger-color);
+}
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 0.8rem;
+}
+
+/* =============================================================================
+   Filter & Sort Controls
+   ============================================================================= */
+
+.filter-sort-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    border-radius: var(--radius-lg);
+}
+
+.filter-input {
+    width: 360px;
+    height: 36px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    outline: none;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    padding: 0 10px;
+    box-shadow: inset 0 1px 0 rgba(60, 64, 67, 0.08);
+}
+
+.filter-input:focus {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.12);
+}
+
+.filter-input::placeholder {
+    color: var(--text-tertiary);
+}
+
+.sort-select {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    outline: none;
+}
+
+.sort-select:focus {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.12);
+}
+
+/* =============================================================================
+   Status Indicator
+   ============================================================================= */
+
+.status-indicator {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-primary);
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    font-size: 0.85rem;
+    z-index: 50;
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--secondary-color);
+}
+
+.status-indicator.drawing .status-dot {
+    background: var(--accent-color);
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-indicator.searching .status-dot {
+    background: var(--primary-color);
+    animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.2); }
+}
+
+/* =============================================================================
+   Sidebar Common
+   ============================================================================= */
+
+.results-sidebar {
+    background: var(--bg-primary);
+    border-left: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.3s ease-in-out;
+    z-index: 200;
+}
+
+.results-sidebar.open {
+    transform: translateX(0);
+}
+
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+}
+
+.sidebar-header h3 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.sidebar-header h3 i {
+    color: var(--primary-color);
+}
+
+.result-count {
+    font-size: 0.8rem;
+    color: var(--text-tertiary);
+    background: var(--bg-tertiary);
+    padding: 4px 10px;
+    border-radius: 12px;
+}
+
+.close-btn {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 4px;
+    transition: var(--transition);
+}
+
+.close-btn:hover {
+    color: var(--text-primary);
+}
+
+.sidebar-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+}
+
+/* =============================================================================
+   Results List
+   ============================================================================= */
+
+.results-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+@keyframes cardFadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.place-card {
+    animation: cardFadeIn 0.25s ease both;
+}
+
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-tertiary);
+}
+
+.empty-state i {
+    font-size: 3rem;
+    margin-bottom: 16px;
+    opacity: 0.5;
+}
+
+.empty-state p {
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+/* =============================================================================
+   Place Card
+   ============================================================================= */
+
+.place-card {
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: var(--transition);
+    border: 1px solid transparent;
+    min-height: 110px;
+}
+
+.place-card-body {
+    display: flex;
+    gap: 10px;
+    height: 100%;
+    min-height: 90px;
+}
+
+.place-card-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.place-card-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+    width: 72px;
+    justify-content: center;
+    align-self: stretch;
+}
+
+.place-card:hover {
+    background: var(--bg-primary);
+    border-color: var(--primary-light);
+    box-shadow: var(--shadow-sm);
+    transform: translateX(4px);
+}
+
+.place-card.active {
+    border-color: var(--primary-color);
+    background: rgba(66, 133, 244, 0.05);
+}
+
+.place-name {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    line-height: 1.3;
+    margin-bottom: 4px;
+}
+
+.place-rating {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.8rem;
+    color: var(--text-tertiary);
+    font-weight: 500;
+    margin-bottom: 2px;
+}
+
+.place-rating.has-rating {
+    color: var(--accent-color);
+}
+
+.place-rating .rating-count {
+    color: var(--text-tertiary);
+    font-weight: 400;
+    font-size: 0.75rem;
+}
+
+.place-type {
+    display: inline-block;
+    font-size: 0.7rem;
+    color: var(--text-tertiary);
+    background: var(--bg-tertiary);
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-bottom: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.place-address {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.3;
+    margin-bottom: 4px;
+}
+
+.address-line {
+    display: block;
+}
+
+.place-details {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.75rem;
+    color: var(--text-tertiary);
+}
+
+.place-details span {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.place-details i {
+    font-size: 0.75rem;
+}
+
+.unavailable {
+    font-style: italic;
+    color: var(--text-tertiary);
+}
+
+/* =============================================================================
+   Map Buttons (Apple Maps, Google Maps)
+   ============================================================================= */
+
+.map-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    width: 72px;
+    height: 36px;
+    flex-shrink: 0;
+    padding: 0 8px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--transition);
+    text-decoration: none;
+    pointer-events: auto;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.map-btn.google {
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+}
+
+.place-card.active .map-btn.google {
+    color: var(--text-primary);
+}
+
+.place-card.active .map-btn.google:hover {
+    background: #4285f4;
+    color: white;
+    border-color: #4285f4;
+}
+
+.map-btn.apple {
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+}
+
+.place-card.active .map-btn.apple {
+    color: var(--text-primary);
+}
+
+.map-btn.phone {
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+}
+
+.place-card.active .map-btn.phone {
+    color: var(--text-primary);
+}
+
+.place-card.active .map-btn.phone:hover {
+    background: #34a853;
+    color: white;
+    border-color: #34a853;
+}
+
+.map-btn.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+.map-btn.phone.disabled {
+    position: relative;
+    opacity: 0.55;
+}
+
+.map-btn.phone.disabled::after {
+    content: '';
+    position: absolute;
+    width: 60%;
+    height: 1.5px;
+    background: currentColor;
+    transform: rotate(-45deg);
+    border-radius: 1px;
+}
+
+.place-card.active .map-btn.apple:hover {
+    background: #007AFF;
+    color: white;
+    border-color: #007AFF;
+}
+
+/* =============================================================================
+   Loading Overlay
+   ============================================================================= */
+
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.9);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    backdrop-filter: blur(4px);
+}
+
+.loading-overlay.hidden {
+    display: none;
+}
+
+.loading-overlay p {
+    margin-top: 16px;
+    color: var(--text-secondary);
+    font-size: 1rem;
+}
+
+/* Spinner */
+.spinner {
+    width: 60px;
+    height: 60px;
+    position: relative;
+}
+
+.double-bounce1, .double-bounce2 {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background-color: var(--primary-color);
+    opacity: 0.6;
+    position: absolute;
+    top: 0;
+    left: 0;
+    animation: sk-bounce 2.0s infinite ease-in-out;
+}
+
+.double-bounce2 {
+    animation-delay: -1.0s;
+}
+
+@keyframes sk-bounce {
+    0%, 100% { transform: scale(0); }
+    50% { transform: scale(1); }
+}
+
+/* =============================================================================
+   Draw Search Shimmer (first-time user hint)
+   ============================================================================= */
+
+@keyframes drawSearchShimmer {
+    0% {
+        transform: translateX(200%);
+        opacity: 0;
+        animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    8% {
+        opacity: 1;
+        animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    40% {
+        transform: translateX(-15%);
+        opacity: 1;
+        animation-timing-function: cubic-bezier(0.55, 0, 1, 0.45);
+    }
+    56% {
+        transform: translateX(-200%);
+        opacity: 0;
+    }
+    100% {
+        transform: translateX(-200%);
+        opacity: 0;
+    }
+}
+
+#lasosearch-btn.shimmer {
+    position: relative;
+    overflow: hidden;
+    min-width: fit-content;
+}
+
+#lasosearch-btn.shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(
+        108deg,
+        transparent 0%,
+        rgba(255, 255, 255, 0.015) 15%,
+        rgba(255, 255, 255, 0.06) 28%,
+        rgba(255, 255, 255, 0.14) 35%,
+        rgba(255, 255, 255, 0.20) 38%,
+        rgba(255, 255, 255, 0.14) 42%,
+        rgba(255, 255, 255, 0.07) 50%,
+        rgba(255, 255, 255, 0.02) 62%,
+        transparent 80%
+    );
+    transform: translateX(200%);
+    animation: drawSearchShimmer 5.5s infinite;
+}
+
+/* =============================================================================
+   Cooldown Indicator (Rate-Limit Pie Chart)
+   ============================================================================= */
+
+#cooldown-indicator {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    display: none;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg-primary);
+    padding: 6px 12px 6px 8px;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    z-index: 50;
+    transition: opacity 0.3s ease;
+}
+
+#cooldown-indicator.active {
+    display: flex;
+}
+
+.cooldown-pie {
+    flex-shrink: 0;
+}
+
+.cooldown-text {
+    white-space: nowrap;
+    min-width: 28px;
+    text-align: center;
+}
+
+/* =============================================================================
+   Scrollbar Styling
+   ============================================================================= */
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--text-tertiary);
+}

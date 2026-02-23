@@ -1,0 +1,131 @@
+/* =============================================================================
+   LASO Search - Desktop/PC Styles
+   ============================================================================= */
+
+/* =============================================================================
+   Header (Desktop)
+   ============================================================================= */
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 24px;
+    background: var(--bg-primary);
+    box-shadow: var(--shadow-sm);
+    z-index: 1000;
+    gap: 16px;
+}
+
+/* Search Container (Desktop) */
+.search-container {
+    flex: 1;
+    max-width: 600px;
+}
+
+/* Header Actions (Desktop) */
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+/* =============================================================================
+   Main Content (Desktop)
+   ============================================================================= */
+
+.main-content {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+/* =============================================================================
+   Map Container (Desktop)
+   ============================================================================= */
+
+.map-container {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+}
+
+#map {
+    width: 100%;
+    height: 100%;
+}
+
+/* Drawing Overlay (Desktop) */
+.drawing-overlay {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-primary);
+    padding: 16px 24px;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    z-index: 100;
+    text-align: center;
+    max-width: 400px;
+}
+
+.drawing-overlay.hidden {
+    display: none;
+}
+
+.drawing-instructions {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.drawing-instructions i {
+    font-size: 2rem;
+    color: var(--accent-color);
+}
+
+.drawing-instructions p {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* =============================================================================
+   Results Sidebar (Desktop)
+   ============================================================================= */
+
+.results-sidebar {
+    width: 380px;
+    background: var(--bg-primary);
+    border-left: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.3s ease-in-out;
+    z-index: 200;
+}
+
+.results-sidebar.open {
+    transform: translateX(0);
+}
+
+/* Medium desktop screens */
+@media (max-width: 1024px) {
+    .results-sidebar {
+        width: 320px;
+    }
+}
+
+/* =============================================================================
+   Status Indicator (Desktop positioning)
+   ============================================================================= */
+
+.status-indicator {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+}
