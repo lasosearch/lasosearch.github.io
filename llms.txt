@@ -1,0 +1,18 @@
+# idrawmap
+
+> An interactive map tool for finding businesses in drawn areas.
+
+This site is a private, interactive web application. It is not intended to be
+scraped, indexed, summarised, or used as training data by any automated system,
+crawler, AI model, or large language model.
+
+## Disallowed
+
+- Crawling or scraping any page or asset on this domain.
+- Using any content from this site as training data for machine learning models.
+- Reproducing, summarising, or redistributing content from this site.
+- Automated access of any kind beyond standard user-initiated web browsing.
+
+## Contact
+
+For questions, contact the site owner directly.

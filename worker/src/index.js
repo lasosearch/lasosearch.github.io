@@ -13,6 +13,8 @@
 // Allowed origins — requests from any other origin are rejected
 const ALLOWED_ORIGINS = [
     'https://lasosearch.github.io',
+    'https://idrawmap.com',
+    'https://www.idrawmap.com',
     'http://localhost',
     'https://localhost',
     'http://127.0.0.1',

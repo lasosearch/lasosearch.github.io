@@ -820,11 +820,94 @@ function updateZoomFitButtonState() {
     }
 }
 
+// =============================================================================
+// Platform-specific empty state (desktop shows placeholder; mobile unchanged)
+// =============================================================================
+function getDefaultEmptyStateHTML() {
+    if (isMobileView()) {
+        return `<div class="empty-state">
+            <i class="fas fa-map-marked-alt"></i>
+            <p>Draw a shape on the map and click 'Draw Search' to find businesses</p>
+        </div>`;
+    }
+    return `<div class="empty-state">
+        <i class="fas fa-map-marked-alt"></i>
+        <p>Results will be displayed here</p>
+    </div>`;
+}
+
+// =============================================================================
+// Desktop Layout Setup  (only called when NOT mobile — mobile DOM untouched)
+// =============================================================================
+function setupDesktopLayout() {
+    const sidebar = document.getElementById('results-sidebar');
+    const sidebarContent = sidebar.querySelector('.sidebar-content');
+    const filterControls = document.querySelector('.filter-sort-controls');
+
+    if (!filterControls || !sidebar || !sidebarContent) return;
+
+    // -- Build PC filter area inside sidebar --
+    const pcFilterArea = document.createElement('div');
+    pcFilterArea.className = 'pc-filter-area';
+
+    // Row 1: filter input + datalist
+    const filterInput = document.getElementById('place-filter');
+    const datalist = document.getElementById('place-filter-options');
+    const filterRow = document.createElement('div');
+    filterRow.className = 'pc-filter-row';
+    if (filterInput) filterRow.appendChild(filterInput);
+    if (datalist) filterRow.appendChild(datalist);
+
+    // Row 2: sort dropdown + clear button (wider, below filter)
+    const sortSelect = document.getElementById('sort-select');
+    const clearFiltersBtn = document.getElementById('clear-filters-btn');
+    const buttonsRow = document.createElement('div');
+    buttonsRow.className = 'pc-filter-buttons-row';
+    if (sortSelect) buttonsRow.appendChild(sortSelect);
+    if (clearFiltersBtn) buttonsRow.appendChild(clearFiltersBtn);
+
+    pcFilterArea.appendChild(filterRow);
+    pcFilterArea.appendChild(buttonsRow);
+
+    // Insert filter area between sidebar-header and sidebar-content
+    sidebar.insertBefore(pcFilterArea, sidebarContent);
+
+    // Make sidebar always visible on desktop
+    sidebar.classList.add('pc-always-visible');
+
+    // Update empty state for desktop
+    const resultsList = document.getElementById('results-list');
+    if (resultsList) {
+        resultsList.innerHTML = `<div class="empty-state">
+            <i class="fas fa-map-marked-alt"></i>
+            <p>Results will be displayed here</p>
+        </div>`;
+    }
+
+    // Size header action buttons (draw, draw search, clear all) to match
+    // draw search width and search-box height (including padding/border).
+    requestAnimationFrame(() => {
+        const searchBox = document.querySelector('.search-box');
+        const drawSearchBtn = document.getElementById('lasosearch-btn');
+        if (searchBox && drawSearchBtn) {
+            const boxH = searchBox.offsetHeight;
+            const btnW = drawSearchBtn.offsetWidth;
+            document.documentElement.style.setProperty('--pc-btn-height', boxH + 'px');
+            document.documentElement.style.setProperty('--pc-btn-width', btnW + 'px');
+        }
+    });
+}
+
 // Initialize on DOM ready
 document.addEventListener('DOMContentLoaded', () => {
     // Detect touch device and apply mobile class
     if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
         document.body.classList.add('is-mobile');
+    }
+
+    // Rearrange DOM for desktop only (mobile DOM stays exactly as-is)
+    if (!document.body.classList.contains('is-mobile')) {
+        setupDesktopLayout();
     }
 
     const params = new URLSearchParams(window.location.search);
@@ -2430,7 +2513,7 @@ function createPlaceCard(place, index) {
     // a frequency counter applied exclusively to custom URL schemes (maps://,
     // comgooglemaps://, etc.).  Standard HTTPS links bypass it entirely.
     const appleHref = appleWebUrl;
-    const appleTarget = _isAppleDevice() ? '_self' : '_blank';
+    const appleTarget = _isIOSDevice() ? '_self' : '_blank';
 
     // ── Card field HTML — always present for uniform height ──
     const hasRating = place.google && place.google.rating;
@@ -2771,11 +2854,14 @@ function centerCardInView(card, smooth) {
     const isExpanded = isMobileView() && document.body.classList.contains('results-expanded');
 
     let targetScrollTop;
-    if (isExpanded) {
-        // In maximized mode: align card top to viewport top
+    if (!isMobileView()) {
+        // Desktop: align card to the top of the visible results area
+        targetScrollTop = cardTopInContent;
+    } else if (isExpanded) {
+        // Mobile maximized: align card top to viewport top
         targetScrollTop = cardTopInContent;
     } else {
-        // In midway / desktop: center the card vertically in the visible area
+        // Mobile midway: center the card vertically in the visible area
         targetScrollTop = cardTopInContent - (vp.height / 2) + (cardH / 2);
     }
 
@@ -3610,12 +3696,7 @@ function clearAll() {
     allSearchResults = [];
     currentDisplayOffset = 0;
     const resultsList = document.getElementById('results-list');
-    resultsList.innerHTML = `
-        <div class="empty-state">
-            <i class="fas fa-map-marked-alt"></i>
-            <p>Draw a shape on the map and click 'Draw Search' to find businesses</p>
-        </div>
-    `;
+    resultsList.innerHTML = getDefaultEmptyStateHTML();
     document.getElementById('result-count').textContent = '0';
 
     const placeFilterInput = document.getElementById('place-filter');

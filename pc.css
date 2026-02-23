@@ -129,3 +129,92 @@
     bottom: 20px;
     left: 20px;
 }
+
+/* =============================================================================
+   Desktop-Only Overrides  (body:not(.is-mobile) — zero impact on mobile)
+   ============================================================================= */
+
+/* ---- Header: pack items together (search-container flex:1 fills gap) ---- */
+body:not(.is-mobile) .header {
+    justify-content: flex-start;
+}
+
+/* ---- Sidebar always visible on desktop ---- */
+body:not(.is-mobile) .results-sidebar.pc-always-visible {
+    transform: translateX(0);
+    transition: none;
+}
+
+/* Hide close button & drag handle — sidebar never closes on desktop */
+body:not(.is-mobile) .results-sidebar .close-btn {
+    display: none;
+}
+
+body:not(.is-mobile) .drag-handle {
+    display: none;
+}
+
+/* ---- PC Filter Area (injected by JS into sidebar) ---- */
+body:not(.is-mobile) .pc-filter-area {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    flex-shrink: 0;
+}
+
+/* Row 1: filter text input — full width */
+body:not(.is-mobile) .pc-filter-row {
+    display: flex;
+}
+
+body:not(.is-mobile) .pc-filter-row .filter-input {
+    width: 100%;
+    height: 36px;
+}
+
+/* Row 2: sort dropdown + clear button — wider, side by side */
+body:not(.is-mobile) .pc-filter-buttons-row {
+    display: flex;
+    gap: 8px;
+}
+
+body:not(.is-mobile) .pc-filter-buttons-row .sort-select {
+    flex: 1;
+    height: 36px;
+    font-size: 0.85rem;
+}
+
+body:not(.is-mobile) .pc-filter-buttons-row .btn {
+    flex: 1;
+    height: 36px;
+    justify-content: center;
+}
+
+/* ---- Header action buttons: match Draw Search width & search-box height ---- */
+body:not(.is-mobile) .header-actions > .btn,
+body:not(.is-mobile) .header-actions > .draw-btn-wrapper > .btn {
+    min-width: var(--pc-btn-width, auto);
+    height: var(--pc-btn-height, auto);
+    justify-content: center;
+    box-sizing: border-box;
+}
+
+body:not(.is-mobile) .header-actions > .draw-btn-wrapper {
+    height: var(--pc-btn-height, auto);
+}
+
+/* ---- Desktop button text: 2× size, no overflow ---- */
+body:not(.is-mobile) .header-actions > .btn,
+body:not(.is-mobile) .header-actions > .draw-btn-wrapper > .btn {
+    font-size: 2em;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+/* Hide filter-sort-controls in header on desktop (JS moves them into sidebar) */
+body:not(.is-mobile) .header-actions > .filter-sort-controls {
+    display: none;
+}
