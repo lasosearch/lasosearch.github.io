@@ -219,6 +219,12 @@ body {
 
 .leaflet-control-attribution {
     opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    user-select: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
 }
 
 /* =============================================================================
