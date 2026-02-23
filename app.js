@@ -46,7 +46,7 @@ let currentZoomLevel = 0;
 const MIN_ZOOM_LEVEL_TO_DRAW = 2;
 
 function getMinZoomLevelToDraw() {
-    return isMobileView() ? 2 : 3;
+    return isMobileView() ? 1 : 2;
 }
 
 // Search results
