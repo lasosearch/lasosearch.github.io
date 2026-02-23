@@ -17,6 +17,7 @@ const ALLOWED_ORIGINS = [
     'https://localhost',
     'http://127.0.0.1',
     'https://127.0.0.1',
+    'https://192.168.1.127:8000'
 ];
 
 function isOriginAllowed(origin) {
