@@ -4225,6 +4225,10 @@ function showNotification(message, type = 'success') {
     `;
     notification.textContent = message;
 
+    // Pin Safari toolbar color so the toast background doesn't bleed through
+    const themeMeta = document.querySelector('meta[name="theme-color"]');
+    if (themeMeta) themeMeta.setAttribute('content', '#ffffff');
+
     document.body.appendChild(notification);
 
     setTimeout(() => {
