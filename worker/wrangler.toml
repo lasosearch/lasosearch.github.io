@@ -8,3 +8,9 @@ compatibility_date = "2024-01-01"
 # The GOOGLE_PLACES_API_KEY is stored as a secret via:
 #   wrangler secret put GOOGLE_PLACES_API_KEY
 # Never put it here.
+
+# Local development — run: wrangler dev --env dev
+# Enables localhost/127.0.0.1 origins so you can test the site locally.
+# Production deploys (wrangler deploy) never set this, so localhost is blocked.
+[env.dev.vars]
+ALLOW_LOCAL_ORIGINS = "true"

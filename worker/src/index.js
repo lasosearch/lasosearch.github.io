@@ -11,20 +11,26 @@
  */
 
 // Allowed origins — requests from any other origin are rejected
-const ALLOWED_ORIGINS = [
+const PROD_ORIGINS = [
     'https://lasosearch.github.io',
     'https://idrawmap.com',
     'https://www.idrawmap.com',
+];
+
+const LOCAL_ORIGINS = [
     'http://localhost',
     'https://localhost',
     'http://127.0.0.1',
     'https://127.0.0.1',
-    'https://192.168.1.127:8000'
+    'https://192.168.1.127:8000',
 ];
 
-function isOriginAllowed(origin) {
+function isOriginAllowed(origin, env) {
     if (!origin) return false;
-    return ALLOWED_ORIGINS.some(allowed => origin === allowed || origin.startsWith(allowed + ':'));
+    const allowed = env.ALLOW_LOCAL_ORIGINS === 'true'
+        ? [...PROD_ORIGINS, ...LOCAL_ORIGINS]
+        : PROD_ORIGINS;
+    return allowed.some(a => origin === a || origin.startsWith(a + ':'));
 }
 
 function corsHeaders(origin) {
@@ -41,7 +47,7 @@ export default {
         const origin = request.headers.get('Origin') || '';
 
         // Block disallowed origins
-        if (!isOriginAllowed(origin)) {
+        if (!isOriginAllowed(origin, env)) {
             return new Response('Forbidden', { status: 403 });
         }
 

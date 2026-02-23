@@ -32,7 +32,18 @@
  */
 
 // ─── Cloudflare Worker Proxy URL ────────────────────────────────────────────
-const LASO_PROXY_URL = '';  // REQUIRED — e.g. 'https://laso-api-proxy.yourname.workers.dev'
+// Production worker URL (REQUIRED) — e.g. 'https://laso-api-proxy.yourname.workers.dev'
+const _PROD_PROXY = '';
+
+// Local development: when serving from localhost/127.0.0.1, route API calls
+// to a local wrangler dev instance instead of the production worker.
+// Start it with:  cd worker && wrangler dev --env dev
+const _LOCAL_PROXY = 'http://localhost:8787';
+
+const _h = typeof window !== 'undefined' && window.location && window.location.hostname;
+const LASO_PROXY_URL = (_h === 'localhost' || _h === '127.0.0.1')
+    ? _LOCAL_PROXY
+    : _PROD_PROXY;
 
 // Client-side daily call budget (per device — secondary safety net).
 // The real hard cap is the Google Cloud quota you set in step 6.
