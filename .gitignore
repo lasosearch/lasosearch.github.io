@@ -9,9 +9,9 @@
 # API key source file (user's home directory reference)
 # Note: The actual file is at ~/.google_maps_api.sh (outside repo)
 
-# Generated files with API keys
+# Generated files
 # index.html
-config.js
+# config.js — safe to commit now (only contains public Worker proxy URL, not API key)
 
 # Dependencies
 node_modules/
