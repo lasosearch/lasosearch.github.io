@@ -1261,7 +1261,7 @@ function closeFreehandPolygon() {
     });
 
     updateStatus(`Lasso created with ${drawingPoints.length} points`);
-    showNotification('Lasso created! Click LASO Search to find businesses');
+    showNotification('Shape created! Click Draw Search to find businesses');
 
     // First-time shimmer: highlight Draw Search button if user has never pressed it
     try {
@@ -3613,7 +3613,7 @@ function clearAll() {
     resultsList.innerHTML = `
         <div class="empty-state">
             <i class="fas fa-map-marked-alt"></i>
-            <p>Draw a shape on the map and click LASO Search to find businesses</p>
+            <p>Draw a shape on the map and click 'Draw Search' to find businesses</p>
         </div>
     `;
     document.getElementById('result-count').textContent = '0';
