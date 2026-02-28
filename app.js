@@ -1073,6 +1073,9 @@ function enableDrawingMode() {
         return;
     }
 
+    // Close search marker popup so user can see while drawing (pin stays)
+    if (searchAddressMarker) searchAddressMarker.closePopup();
+
     isDrawingMode = true;
 
     const drawBtn = document.getElementById('drawing-toggle');
@@ -1825,6 +1828,7 @@ function pointToLineDistance(point, lineStart, lineEnd) {
 let isSearching = false;
 let currentSearchOffset = 0;
 let searchPinCoords = null; // Coordinates of address search pin
+let searchAddressMarker = null; // Persistent marker for searched address
 let searchAbortController = null; // AbortController for cancelling timed-out searches
 const SEARCH_TIMEOUT_MS = 60000; // 60 second global search timeout
 
@@ -2081,12 +2085,12 @@ function canMakeGooglePlacesCall() {
  * for Google Nearby Search's locationRestriction.
  */
 function polygonToBoundingCircle(polygonPoints) {
-    const centroid = getPolygonCentroid(polygonPoints);
-    if (!centroid) return null;
+    const center = findPointInsidePolygon(polygonPoints);
+    if (!center) return null;
 
     let maxRadius = 0;
     for (const point of polygonPoints) {
-        const dist = calculateDistance(centroid, point);
+        const dist = calculateDistance(center, point);
         if (dist > maxRadius) maxRadius = dist;
     }
 
@@ -2094,15 +2098,65 @@ function polygonToBoundingCircle(polygonPoints) {
     const radius = Math.min(maxRadius * 1.1, 50000);
 
     return {
-        center: { latitude: centroid[0], longitude: centroid[1] },
+        center: { latitude: center[0], longitude: center[1] },
         radius: radius
     };
 }
 
 /**
+ * Find a point guaranteed to be inside the polygon.
+ * Uses the geometric centroid first; if it falls outside (e.g. donut/hole),
+ * searches midpoints and vertex offsets until one is found inside.
+ */
+function findPointInsidePolygon(polygonPoints) {
+    const centroid = getPolygonCentroid(polygonPoints);
+    if (!centroid) return null;
+
+    // Fast path: centroid is inside (convex and most concave shapes)
+    if (pointInPolygon(centroid, polygonPoints)) return centroid;
+
+    // Centroid is outside (donut, C-shape, etc.)
+    // Try midpoints between centroid and each vertex
+    for (const v of polygonPoints) {
+        const mid = [(centroid[0] + v[0]) / 2, (centroid[1] + v[1]) / 2];
+        if (pointInPolygon(mid, polygonPoints)) return mid;
+    }
+
+    // Try points nudged slightly inward from each vertex toward centroid
+    for (const v of polygonPoints) {
+        const nudged = [
+            v[0] + 0.01 * (centroid[0] - v[0]),
+            v[1] + 0.01 * (centroid[1] - v[1])
+        ];
+        if (pointInPolygon(nudged, polygonPoints)) return nudged;
+    }
+
+    // Try midpoints of each polygon edge
+    for (let i = 0; i < polygonPoints.length - 1; i++) {
+        const a = polygonPoints[i];
+        const b = polygonPoints[i + 1];
+        const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        // Offset slightly perpendicular to the edge
+        const dx = b[1] - a[1];
+        const dy = -(b[0] - a[0]);
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        const offset = [(mid[0] + dy / len * 0.0001), (mid[1] + dx / len * 0.0001)];
+        if (pointInPolygon(offset, polygonPoints)) return offset;
+        // Try the other side
+        const offset2 = [(mid[0] - dy / len * 0.0001), (mid[1] - dx / len * 0.0001)];
+        if (pointInPolygon(offset2, polygonPoints)) return offset2;
+    }
+
+    // Last resort: return centroid anyway
+    console.warn('[findPointInsidePolygon] Could not find interior point, using centroid');
+    return centroid;
+}
+
+/**
  * Search for businesses within a polygon using Google Nearby Search (New).
- * Makes parallel requests for each type group, combines and deduplicates,
- * then filters to the polygon boundary.
+ * Uses POPULARITY ranking so important/large places aren't pushed out by
+ * 20 tiny shops closer to center.  Makes 4 parallel requests (one per
+ * type group), combines, deduplicates, then filters to the polygon boundary.
  */
 async function searchPlacesWithGoogle(polygonPoints, progressCallback) {
     // ── Search-area validation (closure-scoped limits — tamper-resistant) ──
@@ -2148,14 +2202,10 @@ async function searchPlacesWithGoogle(polygonPoints, progressCallback) {
 
     if (progressCallback) progressCallback(`Filtering ${uniquePlaces.length} places to polygon...`);
 
-    // Filter to polygon boundary
+    // Filter strictly to polygon boundary
     const filtered = uniquePlaces.filter(place => {
         if (!place.coordinates) return false;
-        const inside = pointInPolygon(place.coordinates, polygonPoints);
-        if (inside) return true;
-        // Include places within 10m of the polygon edge
-        const dist = getDistanceToPolygonEdge(place.coordinates, polygonPoints);
-        return dist <= 10;
+        return pointInPolygon(place.coordinates, polygonPoints);
     });
 
     console.log(`[Google Places] ${filtered.length} places inside polygon (filtered from ${uniquePlaces.length})`);
@@ -2189,7 +2239,7 @@ async function fetchNearbyPlaces(includedTypes, circle) {
                 includedTypes: includedTypes,
                 locationRestriction: { circle: circle },
                 maxResultCount: 20,
-                rankPreference: 'DISTANCE'
+                rankPreference: 'POPULARITY'
             })
         });
 
@@ -3299,18 +3349,24 @@ function displayGeocodeResult(result, searchQuery) {
         }
     }
 
-    // Add a marker for the searched address
+    // Remove previous search marker if any
+    if (searchAddressMarker) {
+        if (map.hasLayer(searchAddressMarker)) map.removeLayer(searchAddressMarker);
+        searchAddressMarker = null;
+    }
+
+    // Add a persistent marker for the searched address (4× size, tracked separately)
     const marker = L.marker([lat, lon], {
         icon: L.divIcon({
             className: 'search-marker',
-            html: '<i class="fas fa-map-pin" style="color: #ea4335; font-size: 32px;"></i>',
-            iconSize: [32, 32],
-            iconAnchor: [16, 32]
+            html: '<div style="width:44px;height:44px;border-radius:50%;background:#ea4335;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:3px solid #fff;"><i class="fas fa-map-pin" style="color:#fff;font-size:20px;"></i></div>',
+            iconSize: [44, 44],
+            iconAnchor: [22, 22]
         })
     }).addTo(map);
 
     marker.bindPopup(`<b>${result.name || searchQuery}</b><br>${displayAddress}`);
-    markers.push(marker);
+    searchAddressMarker = marker;
 
     // Fly to address at target display level (PC: 3, mobile: 2)
     const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
@@ -3425,9 +3481,13 @@ function setupEventListeners() {
     document.getElementById('clear-btn').addEventListener('click', clearAll);
 
     // Address search
-    document.getElementById('search-btn').addEventListener('click', searchAddress);
+    document.getElementById('search-btn').addEventListener('click', () => {
+        document.getElementById('address-input').blur();
+        searchAddress();
+    });
     document.getElementById('address-input').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
+            e.target.blur();
             searchAddress();
         }
     });
@@ -3740,6 +3800,12 @@ function clearAll() {
     _highlightedMarkerIndex = null;
     searchPinCoords = null;
     isAutoFittingPolygon = false;
+
+    // Remove persistent search address marker
+    if (searchAddressMarker) {
+        if (map.hasLayer(searchAddressMarker)) map.removeLayer(searchAddressMarker);
+        searchAddressMarker = null;
+    }
 
     // ── 2. Remove all tracked markers BEFORE map.stop() so that any
     //       synchronously-fired moveend handlers see hasLayer() === false.
@@ -4383,9 +4449,70 @@ function updateStatus(text, isSearching = false) {
         if (subModePreBtn)  subModePreBtn.classList.toggle('active', directionSubMode === 'pre-game');
         if (subModePostBtn) subModePostBtn.classList.toggle('active', directionSubMode === 'post-game');
         if (subModeDesc) {
-            subModeDesc.textContent = directionSubMode === 'post-game'
-                ? 'Current location → searched area → selected place'
-                : 'Current location → selected place → searched area';
+            const stops = directionSubMode === 'post-game'
+                ? [{label:'Current location',bg:'#ea4335',fg:'#fff'}, {label:'Searched place',bg:'#fbbc04',fg:'#333'}, {label:'Selected place',bg:'#4285f4',fg:'#fff'}]
+                : [{label:'Current location',bg:'#ea4335',fg:'#fff'}, {label:'Selected place',bg:'#4285f4',fg:'#fff'}, {label:'Searched place',bg:'#fbbc04',fg:'#333'}];
+            subModeDesc.innerHTML =
+                stops.map(s => `<div class="sub-mode-row"><span class="sub-mode-pill" style="background:${s.bg};color:${s.fg};border-color:${s.bg};">${s.label}</span></div>`).join('') +
+                `<svg class="sub-mode-svg" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <marker id="sma" viewBox="0 0 10 10" refX="9" refY="5"
+                                markerWidth="6" markerHeight="6" orient="auto-start-auto">
+                            <path class="sub-mode-arrowhead" d="M 0 0 L 10 5 L 0 10 z"/>
+                        </marker>
+                    </defs>
+                    <line class="sub-mode-connector" marker-end="url(#sma)"/>
+                    <line class="sub-mode-connector" marker-end="url(#sma)"/>
+                    <line class="sub-mode-connector" marker-end="url(#sma)"/>
+                    <line class="sub-mode-connector" marker-end="url(#sma)"/>
+                </svg>`;
+            requestAnimationFrame(() => _equalizePillsAndDrawArrows());
+        }
+    }
+
+    function _equalizePillsAndDrawArrows() {
+        if (!subModeDesc) return;
+        const pills = subModeDesc.querySelectorAll('.sub-mode-pill');
+        if (pills.length === 0) return;
+        let maxW = 0;
+        pills.forEach(p => { p.style.width = ''; maxW = Math.max(maxW, p.offsetWidth); });
+        if (maxW > 0) pills.forEach(p => { p.style.width = maxW + 'px'; });
+        _drawSubModeArrows();
+    }
+
+    function _drawSubModeArrows() {
+        if (!subModeDesc) return;
+        const pills = subModeDesc.querySelectorAll('.sub-mode-pill');
+        const lines = subModeDesc.querySelectorAll('.sub-mode-connector');
+        const svg   = subModeDesc.querySelector('.sub-mode-svg');
+        if (pills.length < 3 || lines.length < 2 || !svg) return;
+
+        const cRect = subModeDesc.getBoundingClientRect();
+        // Skip if container not visible (overlay hidden)
+        if (cRect.width === 0 || cRect.height === 0) return;
+
+        // Set SVG viewBox to match actual pixel dimensions
+        svg.setAttribute('viewBox', `0 0 ${cRect.width} ${cRect.height}`);
+
+        const rects = Array.from(pills).map(p => p.getBoundingClientRect());
+
+        for (let i = 0; i < 2; i++) {
+            const from = rects[i];
+            const to   = rects[i + 1];
+
+            // Arrow A: center-bottom of pill i → left edge, vertical center of pill i+1
+            const a = lines[i * 2];
+            a.setAttribute('x1', from.left + from.width / 2 - cRect.left);
+            a.setAttribute('y1', from.bottom - cRect.top + 2);
+            a.setAttribute('x2', to.left - cRect.left - 2);
+            a.setAttribute('y2', to.top + to.height / 2 - cRect.top);
+
+            // Arrow B: right edge, vertical center of pill i → center-top of pill i+1
+            const b = lines[i * 2 + 1];
+            b.setAttribute('x1', from.right - cRect.left + 2);
+            b.setAttribute('y1', from.top + from.height / 2 - cRect.top);
+            b.setAttribute('x2', to.left + to.width / 2 - cRect.left);
+            b.setAttribute('y2', to.top - cRect.top - 2);
         }
     }
     syncDirectionUIVisibility();
@@ -4399,6 +4526,11 @@ function updateStatus(text, isSearching = false) {
         if (advancedPanel) advancedPanel.classList.add('hidden');
         overlay.classList.remove('hidden');
         blockBody();
+        // Double-rAF: first rAF lets browser process display:none → visible,
+        // second rAF fires after layout is complete so pills measure correctly.
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => _equalizePillsAndDrawArrows());
+        });
     }
 
     function closeSettings() {
@@ -4423,6 +4555,10 @@ function updateStatus(text, isSearching = false) {
             directionModeEnabled = toggle.checked;
             try { localStorage.setItem('laso_direction_mode', String(directionModeEnabled)); } catch (e) {}
             syncDirectionUIVisibility();
+            // Redraw arrows after direction options fade in
+            if (directionModeEnabled) {
+                setTimeout(() => _equalizePillsAndDrawArrows(), 200);
+            }
         });
     }
 
@@ -4500,36 +4636,41 @@ function updateStatus(text, isSearching = false) {
     function initDragAndDrop() {
         if (!pool || !track) return;
 
-        // Clean previous circles
+        // Build permanent pool-slots (one per letter, left-to-right: A B C D)
         pool.innerHTML = '';
-        const slots = track.querySelectorAll('.direction-slot');
-        slots.forEach(slot => {
+        ['A', 'B', 'C', 'D'].forEach(letter => {
+            const ps = document.createElement('div');
+            ps.className = 'pool-slot';
+            ps.dataset.letter = letter;
+            pool.appendChild(ps);
+        });
+
+        const trackSlots = track.querySelectorAll('.direction-slot');
+        trackSlots.forEach(slot => {
             slot.classList.remove('occupied', 'drag-over');
-            // Remove any circle that was previously inside
             const old = slot.querySelector('.direction-circle');
             if (old) old.remove();
         });
 
-        // Place circles from saved order into slots — even if the location
-        // doesn't exist yet.  The order is pre-configured so that when a
-        // location becomes available it is used in the correct position.
+        // Place circles from saved order into track slots
         const placedSet = new Set();
         let slotIdx = 0;
         directionOrder.forEach(letter => {
-            if (slotIdx >= slots.length) return;
+            if (slotIdx >= trackSlots.length) return;
             const circle = _createCircle(letter);
-            const slot = slots[slotIdx++];
+            const slot = trackSlots[slotIdx++];
             slot.appendChild(circle);
             circle.classList.add('in-slot');
             slot.classList.add('occupied');
             placedSet.add(letter);
         });
 
-        // Remaining letters (not placed) → pool
+        // Remaining letters stay in their permanent pool-slot
         ['A', 'B', 'C', 'D'].forEach(letter => {
             if (placedSet.has(letter)) return;
             const circle = _createCircle(letter);
-            pool.appendChild(circle);
+            const ps = pool.querySelector(`.pool-slot[data-letter="${letter}"]`);
+            if (ps) ps.appendChild(circle);
         });
     }
 
@@ -4552,6 +4693,7 @@ function updateStatus(text, isSearching = false) {
         const el = e.currentTarget;
 
         e.preventDefault();
+        el.style.transition = 'none'; // prevent lag on first pickup
         el.setPointerCapture(e.pointerId);
 
         const rect = el.getBoundingClientRect();
@@ -4622,8 +4764,9 @@ function updateStatus(text, isSearching = false) {
             }
         });
 
-        // Reset inline positioning
+        // Reset inline positioning and restore transitions
         el.classList.remove('dragging');
+        el.style.transition = '';
         el.style.position = '';
         el.style.left = '';
         el.style.top = '';
@@ -4635,9 +4778,11 @@ function updateStatus(text, isSearching = false) {
             el.classList.add('in-slot');
             targetSlot.classList.add('occupied');
         } else {
-            // Return to pool
+            // Return to its permanent pool-slot
             el.classList.remove('in-slot');
-            pool.appendChild(el);
+            const ps = pool.querySelector(`.pool-slot[data-letter="${el.dataset.letter}"]`);
+            if (ps) ps.appendChild(el);
+            else pool.appendChild(el);
         }
 
         _dragState = null;

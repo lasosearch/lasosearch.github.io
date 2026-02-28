@@ -1262,6 +1262,7 @@ body {
     line-height: 1.55;
     color: var(--text-secondary);
     margin: 0;
+    text-align: justify;
 }
 
 /* Direction options: hidden by default (direction mode OFF) */
@@ -1314,6 +1315,7 @@ body {
     line-height: 1.55;
     color: var(--text-secondary);
     margin: 0;
+    text-align: justify;
 }
 
 @keyframes settingsFadeIn {
@@ -1388,10 +1390,52 @@ body.overlay-active .direction-advanced-panel {
 }
 
 .sub-mode-desc {
-    margin: 8px 0 0;
-    font-size: 0.78rem;
-    color: var(--text-tertiary);
-    line-height: 1.4;
+    position: relative;
+    margin: 12px 0 0;
+    width: 100%;
+}
+
+.sub-mode-row {
+    padding: 2px 0;
+}
+
+.sub-mode-row:nth-of-type(1) { text-align: left; }
+.sub-mode-row:nth-of-type(2) { text-align: center; }
+.sub-mode-row:nth-of-type(3) { text-align: right; }
+
+.sub-mode-pill {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 999px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+    position: relative;
+    z-index: 1;
+    /* width set dynamically by syncSubModeUI() */
+    text-align: center;
+    box-sizing: border-box;
+}
+
+.sub-mode-svg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+.sub-mode-connector {
+    stroke: var(--text-tertiary);
+    stroke-width: 1.2;
+    fill: none;
+}
+
+.sub-mode-arrowhead {
+    fill: var(--text-tertiary);
 }
 
 /* =============================================================================
@@ -1515,14 +1559,48 @@ body.overlay-active .direction-advanced-panel {
     margin-bottom: 20px;
 }
 
-/* Pool: vertical stack of circles above the track */
+/* Pool: horizontal row of permanent circle homes */
 .direction-pool {
     display: flex;
-    flex-direction: column;
     align-items: center;
+    justify-content: center;
     gap: 10px;
     min-height: 48px;
     padding: 8px 0;
+}
+
+.pool-slot {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: 2px dashed var(--border-color);
+    background: var(--bg-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    position: relative;
+}
+
+/* Label under each pool-slot */
+.pool-slot::after {
+    font-size: 0.65rem;
+    color: var(--text-tertiary);
+    font-weight: 500;
+    position: absolute;
+    bottom: -18px;
+    white-space: nowrap;
+}
+
+.pool-slot[data-letter="A"]::after { content: 'A'; }
+.pool-slot[data-letter="B"]::after { content: 'B'; }
+.pool-slot[data-letter="C"]::after { content: 'C'; }
+.pool-slot[data-letter="D"]::after { content: 'D'; }
+
+/* Hide border when circle is inside */
+.pool-slot:has(.direction-circle) {
+    border-color: transparent;
+    background: transparent;
 }
 
 /* Track: horizontal line with circle cutout slots */

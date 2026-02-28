@@ -10,7 +10,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#ffffff">
-    <title>idrawmap - Find Businesses in Your Area</title>
+    <title>idrawmap - Find Locations in Your Area</title>
     <link rel="stylesheet" href="common.css">
     <link rel="stylesheet" href="pc.css">
     <link rel="stylesheet" href="mobile.css">
@@ -122,7 +122,7 @@
                     <div id="results-list" class="results-list">
                         <div class="empty-state">
                             <i class="fas fa-map-marked-alt"></i>
-                            <p>Draw a shape on the map and click Draw Search to find businesses</p>
+                            <p>Draw a shape on the map and click Draw Search to find proximate locations</p>
                         </div>
                     </div>
                 </div>
@@ -154,7 +154,7 @@
                     </div>
                     <div class="direction-content-area" id="direction-content-area">
                         <div class="direction-info-text" id="direction-info-text">
-                            <p>When enabled, Google Maps and Apple Maps links open in <strong>directions mode</strong> — routing from your searched area or current location to the selected business.</p>
+                            <p>When enabled, Google Maps and Apple Maps links open in <strong>directions mode</strong> — by default routing from your current location to the searched location to the selected location.</p>
                         </div>
                         <div class="direction-options" id="direction-options">
                             <div class="direction-sub-mode" id="direction-sub-mode">
@@ -162,14 +162,16 @@
                                     <button class="sub-mode-btn active" data-mode="pre-game" id="sub-mode-pre">Pre-game</button>
                                     <button class="sub-mode-btn" data-mode="post-game" id="sub-mode-post">Post-game</button>
                                 </div>
-                                <p class="sub-mode-desc" id="sub-mode-desc">Current location → selected place → searched area</p>
+                                <div class="sub-mode-desc" id="sub-mode-desc">
+                                    <!-- Populated by syncSubModeUI() -->
+                                </div>
                             </div>
                             <div class="direction-advanced-link" id="direction-advanced-link">
                                 <button id="direction-advanced-btn" class="direction-advanced-btn">Advanced</button>
                             </div>
                         </div>
                         <div class="direction-info-tooltip hidden" id="direction-info-tooltip">
-                            <p>Google Maps and Apple Maps links open in <strong>directions mode</strong> — routing from your searched area or current location to the selected business.</p>
+                            <p>Google Maps and Apple Maps links open in <strong>directions mode</strong> — routing from your current location to your searched location to the selected location.</p>
                         </div>
                     </div>
                 </div>
@@ -196,7 +198,7 @@
                         <div class="direction-legend-item">
                             <span class="direction-legend-dot" style="background:#fbbc04;"></span>
                             <span class="direction-legend-letter">B</span>
-                            <span class="direction-legend-desc">Searched address</span>
+                            <span class="direction-legend-desc">Searched place</span>
                         </div>
                         <div class="direction-legend-item">
                             <span class="direction-legend-dot" style="background:#34a853;"></span>
@@ -235,7 +237,7 @@
                 <div class="double-bounce1"></div>
                 <div class="double-bounce2"></div>
             </div>
-            <p>Searching for businesses...</p>
+            <p>Searching for locations...</p>
         </div>
     </div>
 
