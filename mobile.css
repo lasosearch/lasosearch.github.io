@@ -186,7 +186,7 @@ body.is-mobile .search-box input {
 /* Pull search button out of search-box on mobile */
 body.is-mobile .search-box .search-btn {
     position: absolute;
-    right: -48px;
+    right: -52px;
     top: 50%;
     transform: translateY(calc(-50% - 2px)); /* compensate for the 4px drop shadow so the visual center aligns with the textbox */
     width: var(--row-h);
@@ -205,7 +205,7 @@ body.is-mobile .search-container {
     min-width: 0;
     max-width: none;
     position: relative;
-    margin-right: 48px;
+    margin-right: 52px;
 }
 
 /* Actions row: force to row 2, full width, wraps so filters get row 3 */
@@ -259,6 +259,25 @@ body.is-mobile .filter-sort-controls #clear-filters-btn {
     font-size: 0.8rem;
     white-space: nowrap;
     flex-shrink: 0;
+}
+
+/* Settings gear button on mobile — row 1, next to search box.
+   Height subtracts 4px shadow so button+shadow = var(--row-h).
+   translateY(-2px) centers the visual block (matches search-btn). */
+body.is-mobile .header > .settings-btn {
+    order: 2;
+    width: var(--row-h);
+    height: calc(var(--row-h) - 4px);
+    flex: 0 0 auto;
+    border: 2px solid var(--border-color);
+    box-shadow: 0 4px 0 var(--border-color);
+    transform: translateY(-2px);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+body.is-mobile .header > .settings-btn.pressed {
+    transform: translateY(0px);
+    box-shadow: 0 2px 0 var(--border-color);
 }
 
 /* Action buttons: row 2, equal width with labels */

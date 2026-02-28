@@ -35,6 +35,9 @@
                     </button>
                 </div>
             </div>
+            <button id="settings-btn" class="settings-btn" title="Settings" aria-label="Settings">
+                <i class="fas fa-cog"></i>
+            </button>
             <div class="header-actions">
                 <div class="filter-sort-controls">
                     <input
@@ -125,6 +128,106 @@
                 </div>
             </aside>
         </main>
+
+        <!-- Settings Overlay -->
+        <div id="settings-overlay" class="settings-overlay hidden">
+            <div class="settings-backdrop" id="settings-backdrop"></div>
+            <div class="settings-panel">
+                <div class="settings-header">
+                    <h3><i class="fas fa-cog"></i> Settings</h3>
+                    <button id="settings-close" class="settings-close-btn" aria-label="Close settings">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="settings-body">
+                    <div class="settings-item">
+                        <div class="settings-item-label">
+                            <span>Direction Mode</span>
+                            <button class="settings-info-btn" id="direction-mode-info" aria-label="Direction Mode info">
+                                <i class="fas fa-info-circle"></i>
+                            </button>
+                        </div>
+                        <label class="settings-toggle">
+                            <input type="checkbox" id="direction-mode-toggle">
+                            <span class="settings-toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="direction-content-area" id="direction-content-area">
+                        <div class="direction-info-text" id="direction-info-text">
+                            <p>When enabled, Google Maps and Apple Maps links open in <strong>directions mode</strong> — routing from your searched area or current location to the selected business.</p>
+                        </div>
+                        <div class="direction-options" id="direction-options">
+                            <div class="direction-sub-mode" id="direction-sub-mode">
+                                <div class="sub-mode-toggle">
+                                    <button class="sub-mode-btn active" data-mode="pre-game" id="sub-mode-pre">Pre-game</button>
+                                    <button class="sub-mode-btn" data-mode="post-game" id="sub-mode-post">Post-game</button>
+                                </div>
+                                <p class="sub-mode-desc" id="sub-mode-desc">Current location → selected place → searched area</p>
+                            </div>
+                            <div class="direction-advanced-link" id="direction-advanced-link">
+                                <button id="direction-advanced-btn" class="direction-advanced-btn">Advanced</button>
+                            </div>
+                        </div>
+                        <div class="direction-info-tooltip hidden" id="direction-info-tooltip">
+                            <p>Google Maps and Apple Maps links open in <strong>directions mode</strong> — routing from your searched area or current location to the selected business.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Advanced Direction Mode Panel (sibling of .settings-panel, same overlay) -->
+            <div class="direction-advanced-panel hidden" id="direction-advanced-panel">
+                <div class="settings-header">
+                    <button id="direction-back-btn" class="direction-back-btn" aria-label="Back to settings">
+                        <i class="fas fa-arrow-left"></i>
+                    </button>
+                    <h3>Route Order</h3>
+                    <button id="direction-advanced-close" class="settings-close-btn" aria-label="Close settings">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="direction-advanced-body">
+                    <div class="direction-legend">
+                        <div class="direction-legend-item">
+                            <span class="direction-legend-dot" style="background:#ea4335;"></span>
+                            <span class="direction-legend-letter">A</span>
+                            <span class="direction-legend-desc">Your current location</span>
+                        </div>
+                        <div class="direction-legend-item">
+                            <span class="direction-legend-dot" style="background:#fbbc04;"></span>
+                            <span class="direction-legend-letter">B</span>
+                            <span class="direction-legend-desc">Searched address</span>
+                        </div>
+                        <div class="direction-legend-item">
+                            <span class="direction-legend-dot" style="background:#34a853;"></span>
+                            <span class="direction-legend-letter">C</span>
+                            <span class="direction-legend-desc">Map center (at Draw Search)</span>
+                        </div>
+                        <div class="direction-legend-item">
+                            <span class="direction-legend-dot" style="background:#4285f4;"></span>
+                            <span class="direction-legend-letter">D</span>
+                            <span class="direction-legend-desc">Selected place</span>
+                        </div>
+                    </div>
+
+                    <div class="direction-builder">
+                        <div class="direction-pool" id="direction-pool">
+                            <!-- Circles injected by JS -->
+                        </div>
+                        <div class="direction-track" id="direction-track">
+                            <div class="direction-slot" data-slot="0"></div>
+                            <div class="direction-slot" data-slot="1"></div>
+                            <div class="direction-slot" data-slot="2"></div>
+                            <div class="direction-slot" data-slot="3"></div>
+                        </div>
+                    </div>
+
+                    <button id="direction-save-btn" class="direction-save-btn">
+                        <i class="fas fa-check"></i> Save
+                    </button>
+                </div>
+            </div>
+        </div>
 
         <!-- Loading Overlay -->
         <div id="loading-overlay" class="loading-overlay hidden">

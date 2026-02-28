@@ -49,6 +49,48 @@ function getMinZoomLevelToDraw() {
     return isMobileView() ? 1 : 2;
 }
 
+// Direction Mode — map center at time of last draw search
+let drawSearchOrigin = null; // [lat, lng]
+let directionModeEnabled = false;
+let directionSubMode = 'pre-game'; // 'pre-game' | 'post-game'
+let useAdvancedOrder = false;       // true when user saves custom order via Advanced panel
+
+// Direction Mode Advanced — four-location model
+// A = auto-detected current location (GPS/IP)
+// B = address searched in location search box
+// C = map center at time of last Draw Search
+// D = selected place from search results (resolved at click-time)
+const directionLocations = { A: null, B: null, C: null, D: null };
+let directionOrder = ['A', 'D', 'B']; // default stop order (pre-game), persisted to localStorage
+
+/**
+ * Determine whether to use B (searched address) or C (map center at draw time)
+ * as the reference point.  Uses B when map center ≈ searched location, C otherwise.
+ */
+function getSmartReference() {
+    if (!directionLocations.B) {
+        // No searched location — prefer current location, fall back to map center
+        return directionLocations.A ? 'A' : 'C';
+    }
+    if (!directionLocations.C) return 'B';
+    const latDiff = Math.abs(directionLocations.B.lat - directionLocations.C.lat);
+    const lngDiff = Math.abs(directionLocations.B.lng - directionLocations.C.lng);
+    if (latDiff < 0.0005 && lngDiff < 0.0005) return 'B';
+    return 'C';
+}
+
+/**
+ * Return the effective direction order based on sub-mode or advanced override.
+ * Pre-game:  A → D → B  (current location → selected place → searched area)
+ * Post-game: A → B → D  (current location → searched area → selected place)
+ */
+function getEffectiveDirectionOrder() {
+    if (useAdvancedOrder && directionOrder.length >= 2) {
+        return directionOrder;
+    }
+    return directionSubMode === 'post-game' ? ['A', 'B', 'D'] : ['A', 'D', 'B'];
+}
+
 // Search results
 let searchResults = [];
 
@@ -388,6 +430,12 @@ function initMap() {
     const fallbackLocation = [40.7128, -74.0060];
     const startLocation = savedLocation || fallbackLocation;
 
+    // Seed direction location A from saved GPS coordinates (will be
+    // overwritten by a live GPS fix once watchPosition fires).
+    if (savedLocation) {
+        directionLocations.A = { lat: savedLocation[0], lng: savedLocation[1], label: 'Saved location' };
+    }
+
     // When starting from a saved location, jump straight to the target display
     // zoom level so there is no fly animation on load.
     const baseZoom = 14;
@@ -480,6 +528,56 @@ function initMap() {
         }
     });
     new ZoomFitControl().addTo(map);
+
+    // My-location button — separate control below zoom-fit with a gap
+    const MyLocationControl = L.Control.extend({
+        options: { position: 'topleft' },
+        onAdd() {
+            const container = L.DomUtil.create('div', 'leaflet-control-my-location leaflet-bar leaflet-control');
+            const btn = L.DomUtil.create('a', 'leaflet-control-my-location-btn', container);
+            btn.innerHTML = '<i class="fas fa-location-arrow"></i>';
+            btn.href = '#';
+            btn.title = 'My location';
+            btn.role = 'button';
+            btn.setAttribute('aria-label', 'My location');
+
+            L.DomEvent.disableClickPropagation(container);
+            L.DomEvent.on(btn, 'click', (e) => {
+                L.DomEvent.preventDefault(e);
+                if (container.classList.contains('locating')) return;
+                if (!navigator.geolocation) {
+                    updateStatus('Geolocation not supported');
+                    return;
+                }
+                container.classList.add('locating');
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        container.classList.remove('locating');
+                        const loc = [position.coords.latitude, position.coords.longitude];
+                        saveLocation(loc[0], loc[1]);
+                        window._userLatLng = loc;
+                        directionLocations.A = { lat: loc[0], lng: loc[1], label: 'Your location' };
+                        isLocationSearchZoom = true;
+                        map.flyTo(loc, 14 + (isMobileView() ? 2 : 3), { duration: 0.8 });
+                        map.once('moveend', () => {
+                            isLocationSearchZoom = false;
+                            updateZoomLevelIndicator();
+                            updateDrawButtonState();
+                            updateStatus('Location found');
+                        });
+                    },
+                    () => {
+                        container.classList.remove('locating');
+                        updateStatus('Location unavailable');
+                    },
+                    { enableHighAccuracy: true, maximumAge: 30000, timeout: 10000 }
+                );
+            });
+
+            return container;
+        }
+    });
+    new MyLocationControl().addTo(map);
 
     // Add OpenStreetMap tile layer (completely free, no API key)
     L.tileLayer(OSM_TILE_URL, {
@@ -622,6 +720,7 @@ function initMap() {
             if (!ipLoc || ipLocationApplied) return;
             // Only apply if GPS hasn't already provided a fix
             ipLocationApplied = true;
+            directionLocations.A = { lat: ipLoc[0], lng: ipLoc[1], label: 'Approximate location' };
             const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
             isLocationSearchZoom = true;
             map.flyTo(ipLoc, targetZoom, { duration: 1.0 });
@@ -645,6 +744,7 @@ function initMap() {
                 ];
                 // Always keep the latest coords available for distance sorting
                 window._userLatLng = userLocation;
+                directionLocations.A = { lat: userLocation[0], lng: userLocation[1], label: 'Your location' };
                 // Persist to localStorage for next session
                 saveLocation(userLocation[0], userLocation[1]);
 
@@ -1764,6 +1864,11 @@ async function performLasoSearch() {
     isSearching = true;
     currentSearchOffset = 0;
 
+    // Capture map center as the origin for Direction Mode
+    const center = map.getCenter();
+    drawSearchOrigin = [center.lat, center.lng];
+    directionLocations.C = { lat: center.lat, lng: center.lng, label: 'Map center' };
+
     // Show loading
     showLoading(true);
     updateStatus('Searching Google Places...', true);
@@ -2544,10 +2649,10 @@ function createPlaceCard(place, index) {
                     </div>
                 </div>
                 <div class="place-card-actions">
-                    <a href="${googleHref}" target="${googleTarget}" rel="noopener" class="map-btn google" data-card-index="${index}" title="Google Maps">
+                    <a href="${googleHref}" target="${googleTarget}" rel="noopener" class="map-btn google directions-capable" data-card-index="${index}" data-dest-lat="${lat}" data-dest-lng="${lng}" data-search-term="${searchTerm.replace(/"/g, '&quot;')}" data-map-provider="google" title="Google Maps">
                         <i class="fab fa-google"></i> <span>Google</span>
                     </a>
-                    <a href="${appleHref}" target="${appleTarget}" rel="noopener" class="map-btn apple" data-card-index="${index}" title="Apple Maps">
+                    <a href="${appleHref}" target="${appleTarget}" rel="noopener" class="map-btn apple directions-capable" data-card-index="${index}" data-dest-lat="${lat}" data-dest-lng="${lng}" data-dest-name="${name.replace(/"/g, '&quot;')}" data-map-provider="apple" title="Apple Maps">
                         <i class="fab fa-apple"></i> <span>Apple</span>
                     </a>
                     <a href="${phoneHref}" class="${phoneBtnClass}" data-card-index="${index}" title="Phone"${place.phone ? '' : ' onclick="return false;"'}>
@@ -2615,10 +2720,10 @@ function buildPopupContent(place, index, simplified) {
                 websiteRowHtml +
             '</div>' +
             '<div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;">' +
-                '<a href="' + googleMapsUrl + '" target="_blank" rel="noopener" title="Google Maps" style="width:36px;height:36px;border-radius:50%;background:#f8f9fa;display:flex;align-items:center;justify-content:center;text-decoration:none;color:#4285f4;font-size:13px;border:1px solid #e0e0e0;">' +
+                '<a href="' + googleMapsUrl + '" target="_blank" rel="noopener" title="Google Maps" class="directions-capable" data-dest-lat="' + lat + '" data-dest-lng="' + lng + '" data-search-term="' + searchTerm.replace(/"/g, '&quot;') + '" data-map-provider="google" style="width:36px;height:36px;border-radius:50%;background:#f8f9fa;display:flex;align-items:center;justify-content:center;text-decoration:none;color:#4285f4;font-size:13px;border:1px solid #e0e0e0;">' +
                     '<i class="fab fa-google"></i>' +
                 '</a>' +
-                '<a href="' + appleMapsUrl + '" target="_blank" rel="noopener" title="Apple Maps" style="width:36px;height:36px;border-radius:50%;background:#f8f9fa;display:flex;align-items:center;justify-content:center;text-decoration:none;color:#333;font-size:15px;border:1px solid #e0e0e0;">' +
+                '<a href="' + appleMapsUrl + '" target="_blank" rel="noopener" title="Apple Maps" class="directions-capable" data-dest-lat="' + lat + '" data-dest-lng="' + lng + '" data-dest-name="' + name.replace(/"/g, '&quot;') + '" data-map-provider="apple" style="width:36px;height:36px;border-radius:50%;background:#f8f9fa;display:flex;align-items:center;justify-content:center;text-decoration:none;color:#333;font-size:15px;border:1px solid #e0e0e0;">' +
                     '<i class="fab fa-apple"></i>' +
                 '</a>' +
                 phoneIconHtml +
@@ -3226,6 +3331,7 @@ function displayGeocodeResult(result, searchQuery) {
 
     // Save search pin coordinates for priority sorting
     searchPinCoords = [lat, lon];
+    directionLocations.B = { lat: lat, lng: lon, label: displayAddress || searchQuery };
 }
 
 // =============================================================================
@@ -3516,7 +3622,7 @@ function setupEventListeners() {
 function setupMobileTouchContinuity() {
     if (!isMobileView()) return;
 
-    const PRESSABLE_SEL = '.header-actions > .btn, .header-actions > .draw-btn-wrapper > .btn, .search-btn, .filter-sort-controls #clear-filters-btn';
+    const PRESSABLE_SEL = '.header-actions > .btn, .header-actions > .draw-btn-wrapper > .btn, .search-btn, .filter-sort-controls #clear-filters-btn, .header > .settings-btn';
     let pressableButtons = Array.from(document.querySelectorAll(PRESSABLE_SEL));
     let currentPressedButton = null;
     let startButton = null;
@@ -4165,9 +4271,9 @@ function updateZoomLevelIndicator() {
     if (isFitZoom) {
         valueEl.innerHTML = '<i class="fas fa-crosshairs"></i>';
     } else {
-        valueEl.textContent = Number.isInteger(currentZoomLevel)
+        valueEl.textContent = (Number.isInteger(currentZoomLevel)
             ? String(currentZoomLevel)
-            : currentZoomLevel.toFixed(1);
+            : currentZoomLevel.toFixed(1)) + 'x';
     }
 
     const minZoomToDraw = getMinZoomLevelToDraw();
@@ -4203,6 +4309,507 @@ function updateStatus(text, isSearching = false) {
         statusIndicator.classList.remove('searching');
     }
 }
+
+// =============================================================================
+// Settings Overlay & Direction Mode
+// =============================================================================
+
+(function initSettings() {
+    // ── Restore persisted state ──
+    try {
+        directionModeEnabled = localStorage.getItem('laso_direction_mode') === 'true';
+        const savedSubMode = localStorage.getItem('laso_direction_sub_mode');
+        if (savedSubMode === 'pre-game' || savedSubMode === 'post-game') {
+            directionSubMode = savedSubMode;
+        }
+        useAdvancedOrder = localStorage.getItem('laso_use_advanced_order') === 'true';
+        if (useAdvancedOrder) {
+            const savedOrder = localStorage.getItem('laso_direction_order');
+            if (savedOrder) {
+                const parsed = JSON.parse(savedOrder);
+                if (Array.isArray(parsed) && parsed.every(l => ['A','B','C','D'].includes(l))) {
+                    directionOrder = parsed;
+                }
+            }
+        } else {
+            // Reset to sub-mode default — prevents stale/duplicate orders from localStorage
+            directionOrder = directionSubMode === 'post-game' ? ['A', 'B', 'D'] : ['A', 'D', 'B'];
+        }
+    } catch (e) { /* localStorage unavailable */ }
+
+    // ── DOM references ──
+    const toggle           = document.getElementById('direction-mode-toggle');
+    const settingsBtn      = document.getElementById('settings-btn');
+    const overlay          = document.getElementById('settings-overlay');
+    const backdrop         = document.getElementById('settings-backdrop');
+    const closeBtn         = document.getElementById('settings-close');
+    const mainPanel        = document.querySelector('.settings-panel');
+    const advancedPanel    = document.getElementById('direction-advanced-panel');
+    const advancedLink     = document.getElementById('direction-advanced-link');
+    const advancedBtn      = document.getElementById('direction-advanced-btn');
+    const backBtn          = document.getElementById('direction-back-btn');
+    const advancedCloseBtn = document.getElementById('direction-advanced-close');
+    const saveBtn          = document.getElementById('direction-save-btn');
+    const pool             = document.getElementById('direction-pool');
+    const track            = document.getElementById('direction-track');
+    const infoBtn          = document.getElementById('direction-mode-info');
+    const contentArea      = document.getElementById('direction-content-area');
+    const infoTooltip      = document.getElementById('direction-info-tooltip');
+    const subModeWrap      = document.getElementById('direction-sub-mode');
+    const subModePreBtn    = document.getElementById('sub-mode-pre');
+    const subModePostBtn   = document.getElementById('sub-mode-post');
+    const subModeDesc      = document.getElementById('sub-mode-desc');
+
+    if (toggle) toggle.checked = directionModeEnabled;
+
+    // ── Overlay body-blocking helpers ──
+    function blockBody()   { document.body.classList.add('overlay-active'); }
+    function unblockBody() { document.body.classList.remove('overlay-active'); }
+
+    // ── Crossfade between info text (OFF) and direction options (ON) ──
+    function syncDirectionUIVisibility() {
+        if (contentArea) {
+            contentArea.classList.toggle('direction-on', directionModeEnabled);
+        }
+        // Hide info button when direction mode is off (text already visible)
+        if (infoBtn) infoBtn.style.display = directionModeEnabled ? '' : 'none';
+        // Dismiss tooltip when toggling off
+        if (!directionModeEnabled && infoTooltip) {
+            infoTooltip.classList.add('hidden');
+            if (infoBtn) infoBtn.classList.remove('active');
+        }
+    }
+    function syncSubModeUI() {
+        if (subModePreBtn)  subModePreBtn.classList.toggle('active', directionSubMode === 'pre-game');
+        if (subModePostBtn) subModePostBtn.classList.toggle('active', directionSubMode === 'post-game');
+        if (subModeDesc) {
+            subModeDesc.textContent = directionSubMode === 'post-game'
+                ? 'Current location → searched area → selected place'
+                : 'Current location → selected place → searched area';
+        }
+    }
+    syncDirectionUIVisibility();
+    syncSubModeUI();
+
+    // ── Open / close settings overlay ──
+    function openSettings() {
+        if (!overlay) return;
+        // Always return to main panel when opening
+        if (mainPanel)    { mainPanel.classList.remove('hidden', 'slide-out-left'); }
+        if (advancedPanel) advancedPanel.classList.add('hidden');
+        overlay.classList.remove('hidden');
+        blockBody();
+    }
+
+    function closeSettings() {
+        if (!overlay) return;
+        overlay.classList.add('hidden');
+        // Reset panel states
+        if (mainPanel)    { mainPanel.classList.remove('slide-out-left'); }
+        if (advancedPanel) advancedPanel.classList.add('hidden');
+        // Dismiss info tooltip
+        if (infoTooltip) infoTooltip.classList.add('hidden');
+        if (infoBtn)     infoBtn.classList.remove('active');
+        unblockBody();
+    }
+
+    if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
+    if (backdrop)    backdrop.addEventListener('click', closeSettings);
+    if (closeBtn)    closeBtn.addEventListener('click', closeSettings);
+
+    // ── Direction Mode toggle ──
+    if (toggle) {
+        toggle.addEventListener('change', () => {
+            directionModeEnabled = toggle.checked;
+            try { localStorage.setItem('laso_direction_mode', String(directionModeEnabled)); } catch (e) {}
+            syncDirectionUIVisibility();
+        });
+    }
+
+    // ── Sub-mode toggle ──
+    function getSubModeOrder(mode) {
+        return mode === 'post-game' ? ['A', 'B', 'D'] : ['A', 'D', 'B'];
+    }
+
+    [subModePreBtn, subModePostBtn].forEach(btn => {
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            directionSubMode = btn.dataset.mode;
+            useAdvancedOrder = false;
+            directionOrder = getSubModeOrder(directionSubMode);
+            try {
+                localStorage.setItem('laso_direction_sub_mode', directionSubMode);
+                localStorage.setItem('laso_use_advanced_order', 'false');
+                localStorage.setItem('laso_direction_order', JSON.stringify(directionOrder));
+            } catch (e) {}
+            syncSubModeUI();
+        });
+    });
+
+    // ── Info icon toggle (tooltip overlay when direction mode ON) ──
+    function dismissTooltip() {
+        if (infoTooltip) infoTooltip.classList.add('hidden');
+        if (infoBtn)     infoBtn.classList.remove('active');
+    }
+
+    if (infoBtn && infoTooltip) {
+        infoBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!directionModeEnabled) return;
+            const showing = !infoTooltip.classList.contains('hidden');
+            infoTooltip.classList.toggle('hidden', showing);
+            infoBtn.classList.toggle('active', !showing);
+        });
+
+        // Dismiss tooltip when tapping anywhere outside it
+        document.addEventListener('click', (e) => {
+            if (infoTooltip.classList.contains('hidden')) return;
+            if (!infoTooltip.contains(e.target) && e.target !== infoBtn && !infoBtn.contains(e.target)) {
+                dismissTooltip();
+            }
+        });
+    }
+
+    // ── Advanced panel navigation ──
+    function openAdvancedPanel() {
+        if (mainPanel)     mainPanel.classList.add('slide-out-left');
+        if (advancedPanel) advancedPanel.classList.remove('hidden');
+        initDragAndDrop();
+    }
+
+    function closeAdvancedPanel() {
+        if (advancedPanel) advancedPanel.classList.add('hidden');
+        if (mainPanel)     mainPanel.classList.remove('slide-out-left');
+    }
+
+    if (advancedBtn)      advancedBtn.addEventListener('click', openAdvancedPanel);
+    if (backBtn)          backBtn.addEventListener('click', closeAdvancedPanel);
+    if (advancedCloseBtn) advancedCloseBtn.addEventListener('click', closeSettings);
+
+    // =====================================================================
+    // Drag-and-Drop Circle Ordering
+    // =====================================================================
+
+    let _dragState = null;   // { el, letter, pointerId, offsetX, offsetY, startSlot }
+
+    /**
+     * (Re-)initialise the drag-and-drop builder every time the advanced
+     * panel is opened.  Reads current directionOrder and directionLocations
+     * to place circles in their saved slots or back in the pool.
+     */
+    function initDragAndDrop() {
+        if (!pool || !track) return;
+
+        // Clean previous circles
+        pool.innerHTML = '';
+        const slots = track.querySelectorAll('.direction-slot');
+        slots.forEach(slot => {
+            slot.classList.remove('occupied', 'drag-over');
+            // Remove any circle that was previously inside
+            const old = slot.querySelector('.direction-circle');
+            if (old) old.remove();
+        });
+
+        // Place circles from saved order into slots — even if the location
+        // doesn't exist yet.  The order is pre-configured so that when a
+        // location becomes available it is used in the correct position.
+        const placedSet = new Set();
+        let slotIdx = 0;
+        directionOrder.forEach(letter => {
+            if (slotIdx >= slots.length) return;
+            const circle = _createCircle(letter);
+            const slot = slots[slotIdx++];
+            slot.appendChild(circle);
+            circle.classList.add('in-slot');
+            slot.classList.add('occupied');
+            placedSet.add(letter);
+        });
+
+        // Remaining letters (not placed) → pool
+        ['A', 'B', 'C', 'D'].forEach(letter => {
+            if (placedSet.has(letter)) return;
+            const circle = _createCircle(letter);
+            pool.appendChild(circle);
+        });
+    }
+
+    function _createCircle(letter) {
+        const el = document.createElement('div');
+        el.className = 'direction-circle';
+        el.dataset.letter = letter;
+        el.textContent = letter;
+        el.setAttribute('aria-label', `Location ${letter}`);
+
+        // Attach pointer listeners for drag
+        el.addEventListener('pointerdown', _onPointerDown);
+
+        return el;
+    }
+
+    // ── Pointer-based drag (works for both mouse & touch) ──
+
+    function _onPointerDown(e) {
+        const el = e.currentTarget;
+
+        e.preventDefault();
+        el.setPointerCapture(e.pointerId);
+
+        const rect = el.getBoundingClientRect();
+        _dragState = {
+            el:       el,
+            letter:   el.dataset.letter,
+            pointerId: e.pointerId,
+            offsetX:  e.clientX - rect.left - rect.width / 2,
+            offsetY:  e.clientY - rect.top - rect.height / 2,
+            startSlot: el.closest('.direction-slot') || null
+        };
+
+        // If circle was in a slot, remove it from that slot
+        if (_dragState.startSlot) {
+            _dragState.startSlot.classList.remove('occupied');
+            el.classList.remove('in-slot');
+        }
+
+        // Move to fixed positioning for dragging
+        el.classList.add('dragging');
+        el.style.position = 'fixed';
+        el.style.left = (e.clientX - 20) + 'px';
+        el.style.top  = (e.clientY - 20) + 'px';
+        el.style.margin = '0';
+        // Append to overlay so it floats above everything
+        overlay.appendChild(el);
+
+        el.addEventListener('pointermove', _onPointerMove);
+        el.addEventListener('pointerup',   _onPointerUp);
+        el.addEventListener('pointercancel', _onPointerUp);
+    }
+
+    function _onPointerMove(e) {
+        if (!_dragState || _dragState.pointerId !== e.pointerId) return;
+        e.preventDefault();
+        _dragState.el.style.left = (e.clientX - 20) + 'px';
+        _dragState.el.style.top  = (e.clientY - 20) + 'px';
+
+        // Highlight slot under pointer
+        const slots = track.querySelectorAll('.direction-slot');
+        slots.forEach(slot => {
+            const sr = slot.getBoundingClientRect();
+            const hit = e.clientX >= sr.left && e.clientX <= sr.right &&
+                        e.clientY >= sr.top  && e.clientY <= sr.bottom;
+            slot.classList.toggle('drag-over', hit && !slot.classList.contains('occupied'));
+        });
+    }
+
+    function _onPointerUp(e) {
+        if (!_dragState || _dragState.pointerId !== e.pointerId) return;
+        e.preventDefault();
+        const { el } = _dragState;
+
+        el.removeEventListener('pointermove', _onPointerMove);
+        el.removeEventListener('pointerup',   _onPointerUp);
+        el.removeEventListener('pointercancel', _onPointerUp);
+
+        // Determine target slot
+        const slots = track.querySelectorAll('.direction-slot');
+        let targetSlot = null;
+        slots.forEach(slot => {
+            slot.classList.remove('drag-over');
+            const sr = slot.getBoundingClientRect();
+            const hit = e.clientX >= sr.left && e.clientX <= sr.right &&
+                        e.clientY >= sr.top  && e.clientY <= sr.bottom;
+            if (hit && !slot.classList.contains('occupied')) {
+                targetSlot = slot;
+            }
+        });
+
+        // Reset inline positioning
+        el.classList.remove('dragging');
+        el.style.position = '';
+        el.style.left = '';
+        el.style.top = '';
+        el.style.margin = '';
+
+        if (targetSlot) {
+            // Place circle in the slot
+            targetSlot.appendChild(el);
+            el.classList.add('in-slot');
+            targetSlot.classList.add('occupied');
+        } else {
+            // Return to pool
+            el.classList.remove('in-slot');
+            pool.appendChild(el);
+        }
+
+        _dragState = null;
+    }
+
+    // ── Save button ──
+    if (saveBtn) {
+        saveBtn.addEventListener('click', () => {
+            const slots = track.querySelectorAll('.direction-slot');
+            const newOrder = [];
+            slots.forEach(slot => {
+                const circle = slot.querySelector('.direction-circle');
+                if (circle) newOrder.push(circle.dataset.letter);
+            });
+            directionOrder = newOrder;
+            try { localStorage.setItem('laso_direction_order', JSON.stringify(directionOrder)); } catch (e) {}
+
+            // Visual feedback: brief button flash
+            saveBtn.style.background = '#34a853';
+            useAdvancedOrder = true;
+            try { localStorage.setItem('laso_use_advanced_order', 'true'); } catch (e) {}
+            saveBtn.textContent = 'Saved!';
+            setTimeout(() => {
+                saveBtn.style.background = '';
+                saveBtn.innerHTML = '<i class="fas fa-check"></i> Save';
+            }, 1200);
+        });
+    }
+})();
+
+// =============================================================================
+// Direction Mode — Multi-Stop URL Generation
+// =============================================================================
+
+/**
+ * Build a multi-stop directions URL for the given provider using the user's
+ * saved directionOrder.  Locations A/B/C are resolved from directionLocations;
+ * D is resolved at click-time from the link's data attributes.
+ *
+ * The first location in order becomes the origin, the last becomes the
+ * destination, and everything in between becomes intermediate waypoints.
+ *
+ * Falls back to a simple origin→destination URL if fewer than 2 locations
+ * are available, or to a pin/search URL if direction mode is off.
+ */
+function buildMultiStopUrl(provider, destLat, destLng, destName, searchTerm, order) {
+    // B↔C fallback: if searched address (B) is null, substitute map center (C) and vice versa
+    const locB = directionLocations.B || directionLocations.C;
+    const locC = directionLocations.C || directionLocations.B;
+
+    const locMap = {
+        A: directionLocations.A,
+        B: locB,
+        C: locC,
+        D: (destLat && destLng)
+            ? { lat: parseFloat(destLat), lng: parseFloat(destLng), label: destName || '' }
+            : null
+    };
+
+    // Build ordered list, filtering out null locations
+    const effectiveOrder = order || directionOrder;
+    const ordered = effectiveOrder
+        .map(letter => locMap[letter])
+        .filter(loc => loc && isFinite(loc.lat) && isFinite(loc.lng));
+
+    if (ordered.length < 2) {
+        // Not enough locations for directions — fall back to simple URL
+        return provider === 'google'
+            ? _getGoogleFallbackUrl(destLat, destLng, searchTerm)
+            : _getAppleFallbackUrl(destLat, destLng, destName);
+    }
+
+    const origin      = ordered[0];
+    const destination  = ordered[ordered.length - 1];
+    const waypoints    = ordered.slice(1, -1);
+
+    if (provider === 'google') {
+        let url = `https://www.google.com/maps/dir/?api=1`
+            + `&origin=${origin.lat},${origin.lng}`
+            + `&destination=${destination.lat},${destination.lng}`
+            + `&travelmode=driving`;
+        if (waypoints.length > 0) {
+            url += `&waypoints=` + waypoints.map(w => `${w.lat},${w.lng}`).join('%7C');
+        }
+        return url;
+    }
+
+    // Apple Maps
+    if (waypoints.length === 0) {
+        return `https://maps.apple.com/?saddr=${origin.lat},${origin.lng}`
+            + `&daddr=${destination.lat},${destination.lng}&dirflg=d`;
+    }
+    // Multi-stop: chain with +to: in daddr
+    const allDests = [...waypoints, destination];
+    const daddrStr = allDests.map(w => `${w.lat},${w.lng}`).join('+to:');
+    return `https://maps.apple.com/?saddr=${origin.lat},${origin.lng}`
+        + `&daddr=${daddrStr}&dirflg=d`;
+}
+
+/**
+ * Build a Google Maps directions URL from drawSearchOrigin to a destination.
+ * Falls back to a regular search URL if no origin is saved.
+ */
+function getGoogleDirectionsUrl(destLat, destLng, searchTerm) {
+    if (drawSearchOrigin) {
+        return `https://www.google.com/maps/dir/?api=1&origin=${drawSearchOrigin[0]},${drawSearchOrigin[1]}&destination=${destLat},${destLng}`;
+    }
+    return _getGoogleFallbackUrl(destLat, destLng, searchTerm);
+}
+
+function _getGoogleFallbackUrl(destLat, destLng, searchTerm) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(searchTerm || `${destLat},${destLng}`)}`;
+}
+
+/**
+ * Build an Apple Maps directions URL from drawSearchOrigin to a destination.
+ * Falls back to a regular pin URL if no origin is saved.
+ */
+function getAppleDirectionsUrl(destLat, destLng, name) {
+    if (drawSearchOrigin) {
+        return `https://maps.apple.com/?saddr=${drawSearchOrigin[0]},${drawSearchOrigin[1]}&daddr=${destLat},${destLng}&dirflg=d`;
+    }
+    return _getAppleFallbackUrl(destLat, destLng, name);
+}
+
+function _getAppleFallbackUrl(destLat, destLng, name) {
+    return `https://maps.apple.com/?q=${encodeURIComponent(name || '')}&ll=${destLat},${destLng}&z=19`;
+}
+
+// ── Direction Mode: click event delegation ──
+// Intercepts clicks on .directions-capable links at click-time so the toggle
+// takes effect immediately without re-rendering cards or popups.
+// When advanced multi-stop order is saved, uses buildMultiStopUrl;
+// otherwise falls back to the simple origin→destination URL.
+document.addEventListener('click', function(e) {
+    if (!directionModeEnabled || !drawSearchOrigin) return;
+
+    const link = e.target.closest('a.directions-capable');
+    if (!link) return;
+
+    const destLat = link.dataset.destLat;
+    const destLng = link.dataset.destLng;
+    if (!destLat || !destLng) return;
+
+    e.preventDefault();
+
+    let url;
+    const provider = link.dataset.mapProvider;
+
+    const effectiveOrder = getEffectiveDirectionOrder();
+    if (effectiveOrder.length >= 2) {
+        url = buildMultiStopUrl(
+            provider,
+            destLat, destLng,
+            link.dataset.destName || '',
+            link.dataset.searchTerm || '',
+            effectiveOrder
+        );
+    } else {
+        // Fallback: simple origin→destination mode
+        if (provider === 'google') {
+            url = getGoogleDirectionsUrl(destLat, destLng, link.dataset.searchTerm || '');
+        } else if (provider === 'apple') {
+            url = getAppleDirectionsUrl(destLat, destLng, link.dataset.destName || '');
+        }
+    }
+
+    if (url) {
+        const target = _isIOSDevice() ? '_self' : '_blank';
+        window.open(url, target);
+    }
+}, true);
 
 function showNotification(message, type = 'success') {
     const notification = document.createElement('div');

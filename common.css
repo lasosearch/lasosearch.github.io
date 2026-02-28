@@ -217,6 +217,37 @@ body {
     pointer-events: none !important;
 }
 
+/* My-location button — matches zoom-fit size, separated by a gap */
+.leaflet-control-my-location {
+    margin-top: 8px !important;
+}
+
+.leaflet-control-my-location-btn {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 30px !important;
+    height: 30px !important;
+    font-size: 14px !important;
+    line-height: 1 !important;
+    color: #333 !important;
+    cursor: pointer;
+}
+
+.leaflet-control-my-location-btn:hover {
+    background-color: #f4f4f4 !important;
+}
+
+.leaflet-control-my-location.locating .leaflet-control-my-location-btn {
+    color: var(--primary-color) !important;
+    animation: locating-pulse 1s ease-in-out infinite;
+}
+
+@keyframes locating-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
 .leaflet-control-attribution {
     opacity: 0 !important;
     visibility: hidden !important;
@@ -1009,6 +1040,656 @@ body {
     white-space: nowrap;
     min-width: 28px;
     text-align: center;
+}
+
+/* =============================================================================
+   Settings Button
+   ============================================================================= */
+
+.settings-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-sm);
+    border: 2px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: #9aa0a6;
+    font-size: 15px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+    flex-shrink: 0;
+}
+
+.settings-btn:hover {
+    background: var(--bg-tertiary);
+    color: #5f6368;
+}
+
+/* =============================================================================
+   Settings Overlay
+   ============================================================================= */
+
+.settings-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: settingsFadeIn 0.2s ease;
+}
+
+.settings-overlay.hidden {
+    display: none;
+}
+
+.settings-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+}
+
+.settings-panel {
+    position: relative;
+    background: var(--bg-primary);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    width: 340px;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    animation: settingsSlideUp 0.25s ease;
+}
+
+.settings-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 20px 14px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.settings-header h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.settings-header h3 i {
+    color: #9aa0a6;
+    font-size: 14px;
+}
+
+.settings-close-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+}
+
+.settings-close-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.settings-body {
+    padding: 16px 20px 20px;
+}
+
+.settings-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.settings-item-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.settings-info-btn {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px;
+    display: flex;
+    align-items: center;
+    transition: var(--transition);
+}
+
+.settings-info-btn:hover {
+    color: var(--primary-color);
+}
+
+.settings-info-btn.active {
+    color: var(--primary-color);
+}
+
+/* Toggle switch */
+.settings-toggle {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    flex-shrink: 0;
+}
+
+.settings-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.settings-toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: var(--border-color);
+    border-radius: 24px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.settings-toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 3px;
+    top: 3px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.2s ease;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.settings-toggle input:checked + .settings-toggle-slider {
+    background: var(--primary-color);
+}
+
+.settings-toggle input:checked + .settings-toggle-slider::before {
+    transform: translateX(20px);
+}
+
+/* =============================================================================
+   Direction Content Area — grid overlay for crossfade between states
+   Both children share grid-area 1/1 so the container sizes to the taller child.
+   ============================================================================= */
+
+.direction-content-area {
+    display: grid;
+    margin-top: 12px;
+    position: relative;
+}
+
+.direction-content-area > .direction-info-text,
+.direction-content-area > .direction-options {
+    grid-area: 1 / 1;
+}
+
+/* Info text: visible by default (direction mode OFF) */
+.direction-info-text {
+    padding: 12px 14px;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-sm);
+    border-left: 3px solid var(--primary-color);
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transition: opacity 0.15s ease; /* brief fade-in when returning to OFF */
+}
+
+.direction-info-text p {
+    font-size: 0.82rem;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+/* Direction options: hidden by default (direction mode OFF) */
+.direction-options {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: none; /* instant hide when switching OFF */
+}
+
+/* When direction mode is ON */
+.direction-content-area.direction-on > .direction-info-text {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: none; /* instant hide — no hangover */
+}
+
+.direction-content-area.direction-on > .direction-options {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transition: opacity 0.15s ease; /* brief fade-in after info text is already gone */
+}
+
+/* =============================================================================
+   Direction Info Tooltip — floating infobox when direction mode is ON
+   ============================================================================= */
+
+.direction-info-tooltip {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    padding: 12px 14px;
+    background: var(--bg-primary);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+    animation: settingsFadeIn 0.15s ease;
+}
+
+.direction-info-tooltip.hidden {
+    display: none;
+}
+
+.direction-info-tooltip p {
+    font-size: 0.82rem;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+@keyframes settingsFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes settingsSlideUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* =============================================================================
+   Overlay Body Blocking — prevent interaction with content below overlay
+   ============================================================================= */
+
+body.overlay-active > *:not(script):not(style):not(link) {
+    pointer-events: none !important;
+}
+
+/* The overlay lives inside .app-container, so it inherits
+   pointer-events: none from the rule above.  Restore interactivity
+   on the overlay and its interactive children explicitly. */
+body.overlay-active .settings-overlay {
+    pointer-events: auto !important;
+}
+
+body.overlay-active .settings-backdrop,
+body.overlay-active .settings-panel,
+body.overlay-active .direction-advanced-panel {
+    pointer-events: auto !important;
+}
+
+/* =============================================================================
+   Direction Mode — Sub-mode Toggle (Pre-game / Post-game)
+   ============================================================================= */
+
+.direction-sub-mode {
+    margin-top: 12px;
+    text-align: center;
+}
+
+.sub-mode-toggle {
+    display: inline-flex;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    border: 2px solid var(--border-color);
+}
+
+.sub-mode-btn {
+    padding: 6px 18px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    border: none;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.sub-mode-btn + .sub-mode-btn {
+    border-left: 2px solid var(--border-color);
+}
+
+.sub-mode-btn.active {
+    background: var(--primary-color);
+    color: #fff;
+}
+
+.sub-mode-btn:not(.active):hover {
+    background: var(--bg-tertiary);
+}
+
+.sub-mode-desc {
+    margin: 8px 0 0;
+    font-size: 0.78rem;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+}
+
+/* =============================================================================
+   Direction Mode — Advanced Link
+   ============================================================================= */
+
+.direction-advanced-link {
+    margin-top: 12px;
+    text-align: center;
+}
+
+.direction-advanced-link.hidden {
+    display: none;
+}
+
+.direction-advanced-btn {
+    background: none;
+    border: none;
+    color: var(--primary-color);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 6px 16px;
+    border-radius: var(--radius-sm);
+    transition: var(--transition);
+    letter-spacing: 0.3px;
+}
+
+.direction-advanced-btn:hover {
+    background: rgba(66, 133, 244, 0.08);
+}
+
+/* =============================================================================
+   Direction Mode — Advanced Panel (second screen inside settings overlay)
+   ============================================================================= */
+
+.direction-advanced-panel {
+    position: relative;
+    background: var(--bg-primary);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    width: 340px;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+}
+
+.direction-advanced-panel.hidden {
+    display: none;
+}
+
+.direction-back-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+}
+
+.direction-back-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.direction-advanced-body {
+    padding: 16px 20px 20px;
+}
+
+/* =============================================================================
+   Direction Mode — Legend
+   ============================================================================= */
+
+.direction-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 20px;
+}
+
+.direction-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    line-height: 1.3;
+}
+
+.direction-legend-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.direction-legend-letter {
+    font-weight: 700;
+    color: var(--text-primary);
+    min-width: 14px;
+}
+
+.direction-legend-desc {
+    color: var(--text-secondary);
+}
+
+/* =============================================================================
+   Direction Mode — Builder (pool + track)
+   ============================================================================= */
+
+.direction-builder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+/* Pool: vertical stack of circles above the track */
+.direction-pool {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    min-height: 48px;
+    padding: 8px 0;
+}
+
+/* Track: horizontal line with circle cutout slots */
+.direction-track {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    border: 2px dashed var(--border-color);
+    min-height: 64px;
+    position: relative;
+    width: 100%;
+}
+
+.direction-slot {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: 2px dashed var(--border-color);
+    background: var(--bg-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    position: relative;
+    transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.direction-slot.drag-over {
+    border-color: var(--primary-color);
+    background: rgba(66, 133, 244, 0.06);
+    box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.15);
+}
+
+.direction-slot.occupied {
+    border-color: transparent;
+    background: transparent;
+}
+
+/* Slot order labels (1st, 2nd, 3rd, 4th) shown when empty */
+.direction-slot::after {
+    font-size: 0.65rem;
+    color: var(--text-tertiary);
+    font-weight: 500;
+    position: absolute;
+    bottom: -18px;
+    white-space: nowrap;
+}
+
+.direction-slot[data-slot="0"]::after { content: '1st'; }
+.direction-slot[data-slot="1"]::after { content: '2nd'; }
+.direction-slot[data-slot="2"]::after { content: '3rd'; }
+.direction-slot[data-slot="3"]::after { content: '4th'; }
+
+/* =============================================================================
+   Direction Mode — Draggable Circles
+   ============================================================================= */
+
+.direction-circle {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85rem;
+    color: #fff;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.2s ease;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+    z-index: 1;
+    position: relative;
+}
+
+.direction-circle:active {
+    cursor: grabbing;
+}
+
+.direction-circle.dragging {
+    transform: scale(1.15);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    z-index: 9999;
+    cursor: grabbing;
+    opacity: 0.92;
+    transition: none;
+}
+
+.direction-circle.snap-back {
+    transition: transform 0.25s cubic-bezier(0.32, 0.72, 0, 1),
+                left 0.25s cubic-bezier(0.32, 0.72, 0, 1),
+                top 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.direction-circle[data-letter="A"] { background: #ea4335; }
+.direction-circle[data-letter="B"] { background: #fbbc04; color: #202124; }
+.direction-circle[data-letter="C"] { background: #34a853; }
+.direction-circle[data-letter="D"] { background: #4285f4; }
+
+/* Disabled state for null locations */
+.direction-circle.disabled {
+    background: #bdc1c6 !important;
+    color: #fff !important;
+    opacity: 0.45;
+    cursor: not-allowed;
+    pointer-events: none;
+    box-shadow: none;
+}
+
+/* Circle placed inside a slot */
+.direction-circle.in-slot {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+
+/* =============================================================================
+   Direction Mode — Save Button
+   ============================================================================= */
+
+.direction-save-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 12px 20px;
+    background: var(--primary-color);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.direction-save-btn:hover {
+    background: var(--primary-dark);
+}
+
+.direction-save-btn:active {
+    transform: scale(0.98);
+}
+
+/* =============================================================================
+   Direction Mode — Panel Transition (main ↔ advanced)
+   ============================================================================= */
+
+.settings-panel.slide-out-left {
+    display: none;
+}
+
+.direction-advanced-panel {
+    animation: settingsSlideInRight 0.25s ease;
+}
+
+@keyframes settingsSlideInRight {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
 }
 
 /* =============================================================================

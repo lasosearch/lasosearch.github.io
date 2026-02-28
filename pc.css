@@ -214,6 +214,13 @@ body:not(.is-mobile) .header-actions > .draw-btn-wrapper > .btn {
     overflow: hidden;
 }
 
+/* Settings gear button on desktop — fixed size, sits in row with search bar */
+body:not(.is-mobile) .header > .settings-btn {
+    width: var(--pc-btn-height, 44px);
+    height: var(--pc-btn-height, 44px);
+    font-size: 16px;
+}
+
 /* Hide filter-sort-controls in header on desktop (JS moves them into sidebar) */
 body:not(.is-mobile) .header-actions > .filter-sort-controls {
     display: none;
