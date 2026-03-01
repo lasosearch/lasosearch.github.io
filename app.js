@@ -1961,15 +1961,37 @@ function getFilterSynonyms(normalizedToken) {
     return null;
 }
 
+/**
+ * Score how well a single query token matches a field string.
+ * Returns a quality number:
+ *   0   – no match
+ *   1.0 – exact or stem-exact substring hit
+ *   0.7 – synonym match
+ *   0.4 – fuzzy / typo-tolerant match
+ *
+ * The OLD code had `t.includes(f)` (backwards substring) which let
+ * token "garden" match field "den" — removed.  Now only the field
+ * is allowed to contain the token, never the reverse (unless they
+ * are equal or the token is a prefix of a word in the field).
+ */
 function tokenMatchesField(token, field) {
     const t = normalizeFilterToken(token);
     const f = normalizeFilterToken(field);
-    if (!t || !f) return false;
+    if (!t || !f) return 0;
 
     const ts = simpleStem(t);
     const fs = simpleStem(f);
 
-    if (f.includes(t) || t.includes(f) || fs.includes(ts) || ts.includes(fs)) return true;
+    // Exact / substring: field contains the token (or stemmed equivalents)
+    if (f.includes(t) || fs.includes(ts)) return 1.0;
+
+    // Word-level exact: token matches a word in the field (prefix/stem)
+    const words = f.split(' ');
+    for (const w of words) {
+        if (!w || w.length < 2) continue;
+        const ws = simpleStem(w);
+        if (ws === ts || ws.startsWith(ts) || ts.startsWith(ws)) return 1.0;
+    }
 
     // Synonym expansion: "cafe" ↔ "coffee shop" etc.
     const syns = getFilterSynonyms(t);
@@ -1977,7 +1999,7 @@ function tokenMatchesField(token, field) {
         for (const syn of syns) {
             if (syn === t) continue;
             const ss = simpleStem(syn);
-            if (f.includes(syn) || syn.includes(f) || fs.includes(ss) || ss.includes(fs)) return true;
+            if (f.includes(syn) || fs.includes(ss)) return 0.7;
         }
     }
 
@@ -1985,19 +2007,16 @@ function tokenMatchesField(token, field) {
     // Short tokens (≤4 chars) get no typo tolerance — a single edit changes
     // the word entirely (e.g. "cafe"→"care"), producing false positives.
     const maxDist = t.length <= 4 ? 0 : (t.length <= 8 ? 1 : 2);
-    if (levenshteinDistance(ts, fs, maxDist) <= maxDist) return true;
+    if (maxDist > 0 && levenshteinDistance(ts, fs, maxDist) <= maxDist) return 0.4;
 
-    // Word-level fuzzy matching (e.g., "restaurants" vs "restaurant")
-    const words = f.split(' ');
+    // Word-level fuzzy matching
     for (const w of words) {
         if (!w || w.length < 2) continue;
         const ws = simpleStem(w);
-        if (ws.includes(ts) || ts.includes(ws)) return true;
-        const wd = levenshteinDistance(ts, ws, maxDist);
-        if (wd <= maxDist) return true;
+        if (maxDist > 0 && levenshteinDistance(ts, ws, maxDist) <= maxDist) return 0.4;
     }
 
-    return false;
+    return 0;
 }
 
 function placeMatchesAnyToken(place, tokens) {
@@ -2005,12 +2024,115 @@ function placeMatchesAnyToken(place, tokens) {
     const name = place?.name || '';
     const type = place?.place_type || '';
 
+    // Require EVERY token to match either the name or type.
+    // This is how Google Maps works — "madison square garden" must have
+    // all three words present.  Fuzzy matches (typos) still count so
+    // "maddison square garden" will still find "Madison Square Garden".
     for (const token of tokens) {
-        if (tokenMatchesField(token, name) || tokenMatchesField(token, type)) {
-            return true;
+        if (tokenMatchesField(token, name) > 0 || tokenMatchesField(token, type) > 0) {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Compute a 0.0–1.0 relevance score for how well a place name matches
+ * the user's filter query.  Google Maps-style tiered ranking:
+ *
+ *   Tier A  (0.90–1.00)  Full-phrase match (exact / prefix / contains)
+ *   Tier B  (0.70–0.89)  All tokens present (order + quality bonus)
+ *   Tier C  (0.01–0.30)  Partial token coverage (proportional)
+ *
+ * Match quality from tokenMatchesField (1.0 exact, 0.7 synonym, 0.4 fuzzy)
+ * is averaged and used as a tiebreaker within each tier, so exact-character
+ * matches outrank typo-corrected matches of the same name.
+ *
+ * When the filter is active and sort mode is 'distance', results are
+ * sorted by relevance first, distance second — so an exact-name match
+ * that is slightly farther always beats a partial-word match that is
+ * slightly closer.
+ */
+function computeNameRelevance(tokens, placeName) {
+    if (!tokens || tokens.length === 0) return 1; // no filter → everything is equally relevant
+    const name = normalizeFilterToken(placeName);
+    if (!name) return 0;
+
+    const query = tokens.join(' ');
+
+    // --- Tier A: full-phrase matching (contiguous substring) ---
+    if (name === query)             return 1.00; // exact
+    if (name.startsWith(query))     return 0.97; // prefix
+    if (name.includes(query))       return 0.93; // contains
+
+    // Also check fuzzy full-phrase: "maddison square garden" vs "madison square garden"
+    // Compare the full query against every len-matched substring of the name.
+    if (query.length >= 5) {
+        const maxFuzzyDist = query.length <= 8 ? 1 : 2;
+        // Check if the name, after normalization, is a fuzzy match to the query
+        if (levenshteinDistance(name, query, maxFuzzyDist) <= maxFuzzyDist) return 0.91;
+        // Check if the query is a fuzzy prefix of the name
+        if (name.length >= query.length) {
+            const namePrefix = name.substring(0, query.length);
+            if (levenshteinDistance(namePrefix, query, maxFuzzyDist) <= maxFuzzyDist) return 0.90;
         }
     }
-    return false;
+
+    // --- Tier B: token-level coverage with quality tracking ---
+    const nameWords = name.split(/\s+/);
+    let matchCount = 0;
+    let qualitySum = 0;
+    const matchPositions = []; // index into nameWords of first word-level hit
+
+    for (const token of tokens) {
+        const t = normalizeFilterToken(token);
+        if (!t) { matchCount++; qualitySum += 1; continue; }
+        let bestQuality = 0;
+        let bestPos = -1;
+        for (let i = 0; i < nameWords.length; i++) {
+            const q = tokenMatchesField(t, nameWords[i]);
+            if (q > bestQuality) {
+                bestQuality = q;
+                bestPos = i;
+                if (q >= 1.0) break; // can't do better
+            }
+        }
+        // Fall back to whole-name match (handles multi-word name fields)
+        if (bestQuality === 0) {
+            const q = tokenMatchesField(t, name);
+            if (q > 0) {
+                bestQuality = q;
+                bestPos = name.indexOf(normalizeFilterToken(t));
+            }
+        }
+        if (bestQuality > 0) {
+            matchCount++;
+            qualitySum += bestQuality;
+            matchPositions.push(bestPos);
+        }
+    }
+
+    const coverage = matchCount / tokens.length;
+    const avgQuality = matchCount > 0 ? qualitySum / matchCount : 0;
+
+    if (coverage >= 1.0) {
+        // All tokens matched — check order preservation
+        let inOrder = true;
+        for (let i = 1; i < matchPositions.length; i++) {
+            if (matchPositions[i] <= matchPositions[i - 1]) {
+                inOrder = false;
+                break;
+            }
+        }
+        // Base: 0.70 (out of order) or 0.80 (in order)
+        // Quality bonus: up to +0.09 based on average match quality
+        const base = inOrder ? 0.80 : 0.70;
+        return base + 0.09 * avgQuality;
+    }
+
+    // Partial coverage: scale linearly between 0.01 and 0.30, quality-weighted
+    return (0.01 + 0.29 * coverage) * avgQuality;
 }
 
 function parsePlaceFiltersFromInput(value) {
@@ -2053,13 +2175,70 @@ function applyFiltersAndSort({ resetToFirstPage = true } = {}) {
         derived = derived.filter(place => placeMatchesAnyToken(place, tokens));
     }
 
+    // When a text filter is active, stamp each result with a relevance tier
+    // so we can sort by tier first, then by the user's chosen sort mode
+    // within each tier.  This is the Google Maps approach: an exact name
+    // match ALWAYS beats a partial match regardless of distance/rating.
+    //
+    // Tier 0 = phrase-level match  (relevance >= 0.90)
+    // Tier 1 = all-tokens match    (relevance >= 0.60)
+    // Tier 2 = partial / weak      (everything else)
+    let tierMap = null;
+    if (hasFilter) {
+        const tokens = activePlaceFilters;
+        tierMap = new Map();
+        for (const place of derived) {
+            const rel = computeNameRelevance(tokens, place.name);
+            let tier;
+            if (rel >= 0.90) tier = 0;       // Tier A – phrase match
+            else if (rel >= 0.60) tier = 1;  // Tier B – all tokens
+            else tier = 2;                    // Tier C – partial
+            tierMap.set(place, { tier, rel });
+        }
+    }
+
     const sorted = derived.slice();
     if (activeSortMode === 'alphabetical') {
-        sorted.sort(compareByAlphabetical);
+        if (tierMap) {
+            sorted.sort((a, b) => {
+                const ta = tierMap.get(a), tb = tierMap.get(b);
+                if (ta.tier !== tb.tier) return ta.tier - tb.tier;
+                return compareByAlphabetical(a, b);
+            });
+        } else {
+            sorted.sort(compareByAlphabetical);
+        }
     } else if (activeSortMode === 'rating') {
-        sorted.sort(compareByRating);
+        if (tierMap) {
+            sorted.sort((a, b) => {
+                const ta = tierMap.get(a), tb = tierMap.get(b);
+                if (ta.tier !== tb.tier) return ta.tier - tb.tier;
+                return compareByRating(a, b);
+            });
+        } else {
+            sorted.sort(compareByRating);
+        }
     } else {
-        if (center) sorted.sort((a, b) => compareByDistance(a, b, center));
+        // Distance mode (default)
+        if (tierMap && center) {
+            sorted.sort((a, b) => {
+                const ta = tierMap.get(a), tb = tierMap.get(b);
+                if (ta.tier !== tb.tier) return ta.tier - tb.tier;
+                // Within same tier, use fine-grained relevance as secondary
+                // (e.g., exact phrase > fuzzy phrase within Tier A)
+                if (ta.rel !== tb.rel) return tb.rel - ta.rel;
+                return compareByDistance(a, b, center);
+            });
+        } else if (tierMap) {
+            // No center available — sort by relevance only
+            sorted.sort((a, b) => {
+                const ta = tierMap.get(a), tb = tierMap.get(b);
+                if (ta.tier !== tb.tier) return ta.tier - tb.tier;
+                return tb.rel - ta.rel;
+            });
+        } else if (center) {
+            sorted.sort((a, b) => compareByDistance(a, b, center));
+        }
     }
 
     allSearchResults = sorted;
@@ -3702,6 +3881,8 @@ async function searchAddress() {
     const cache = _loadGeoCache();
     const cached = cache[normAddr];
     if (cached) {
+        const cn = cached.name || (cached.namedetails && cached.namedetails.name) || cached.display_name || '';
+        console.log(`[searchAddress] CACHE HIT for "${address}" → "${cn}" [${cached.lat}, ${cached.lon}]`);
         _lastSearchedAddress = normAddr;
         displayGeocodeResult(cached, address);
         return;
@@ -3741,7 +3922,16 @@ async function searchAddress() {
         }
 
         if (candidates.length > 0) {
-            // Pick the candidate closest to map center (both already name-filtered)
+            // Pick best candidate using composite relevance + proximity score
+            console.log(`[searchAddress] "${address}" — ${candidates.length} geocoder candidates (Nominatim: ${nominatimResult ? 'yes' : 'no'}, Photon: ${photonResult ? 'yes' : 'no'})`);
+            if (nominatimResult) {
+                const nn = nominatimResult.name || (nominatimResult.namedetails && nominatimResult.namedetails.name) || nominatimResult.display_name || '';
+                console.log(`  Nominatim pick: "${nn}" [${nominatimResult.lat}, ${nominatimResult.lon}]`);
+            }
+            if (photonResult) {
+                const pn = photonResult.name || photonResult.display_name || '';
+                console.log(`  Photon pick: "${pn}" [${photonResult.lat}, ${photonResult.lon}]`);
+            }
             const result = candidates.length === 1
                 ? candidates[0]
                 : _pickClosestGeoResult(candidates, center,
@@ -3764,49 +3954,80 @@ async function searchAddress() {
 }
 
 /**
- * From an array of geocode results, return the one closest to `center`.
+ * Score how well a geocode result's name matches the search query.
+ * Delegates to computeNameRelevance which has full fuzzy/typo support,
+ * tiered scoring (phrase → all-tokens → partial), and match-quality
+ * tracking.  This single code path ensures the geocoder and the
+ * place-filter use identical ranking logic.
+ */
+function _geoNameRelevance(resultName, query) {
+    if (!resultName || !query) return 0;
+    const tokens = tokenizeFilterQuery(query);
+    if (tokens.length === 0) return 0;
+    return computeNameRelevance(tokens, resultName);
+}
+
+/**
+ * From an array of geocode results, return the best match using
+ * tier-based ranking: relevance tier first, distance second.
  * `getLatLon` extracts [lat, lon] from a result object.
- * If `query` is provided, prefer results whose name matches the query
- * (apostrophe-insensitive) before falling back to pure distance.
+ *
+ * Tier 0 = phrase-level match   (relevance >= 0.90)
+ * Tier 1 = all-tokens match     (relevance >= 0.60)
+ * Tier 2 = partial / weak       (everything else)
+ *
+ * A result in a higher tier ALWAYS beats one in a lower tier,
+ * regardless of distance.  Within the same tier, closer wins.
+ * This mirrors Google Maps: "Madison Square Garden" (exact match,
+ * 6 km away) always beats "The Garden at Studio Square" (partial
+ * match, 1 km away).
  */
 function _pickClosestGeoResult(results, center, getLatLon, query) {
     if (results.length === 1) return results[0];
-
-    // When a query is provided, prefer results whose name matches it
-    let candidates = results;
-    if (query) {
-        const normQuery = _normalizeForMatch(query);
-        const nameMatches = results.filter(r => {
-            const name = r.name || (r.namedetails && r.namedetails.name) || r.display_name || '';
-            const normName = _normalizeForMatch(name);
-            return normName.includes(normQuery) || normQuery.includes(normName);
-        });
-        if (nameMatches.length > 0) candidates = nameMatches;
-    }
 
     const toRad = d => d * Math.PI / 180;
     const cLat = toRad(center.lat);
     const cLon = toRad(center.lng);
 
-    let best = candidates[0];
-    let bestDist = Infinity;
-    for (const r of candidates) {
+    // Compute raw distances and name relevance
+    const entries = results.map(r => {
+        const rName = r.name || (r.namedetails && r.namedetails.name) || r.display_name || '';
         const [lat, lon] = getLatLon(r);
-        if (isNaN(lat) || isNaN(lon)) continue;
-        const rLat = toRad(lat);
-        const rLon = toRad(lon);
-        const dLat = rLat - cLat;
-        const dLon = rLon - cLon;
-        // Haversine
-        const a = Math.sin(dLat / 2) ** 2 +
-                  Math.cos(cLat) * Math.cos(rLat) * Math.sin(dLon / 2) ** 2;
-        const dist = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        if (dist < bestDist) {
-            bestDist = dist;
-            best = r;
+        let dist = Infinity;
+        if (!isNaN(lat) && !isNaN(lon)) {
+            const rLat = toRad(lat), rLon = toRad(lon);
+            const dLat = rLat - cLat, dLon = rLon - cLon;
+            const a = Math.sin(dLat / 2) ** 2 +
+                      Math.cos(cLat) * Math.cos(rLat) * Math.sin(dLon / 2) ** 2;
+            dist = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         }
+        const nameRel = query ? _geoNameRelevance(rName, query) : 0;
+        let tier;
+        if (nameRel >= 0.90) tier = 0;       // Tier A – phrase match
+        else if (nameRel >= 0.60) tier = 1;  // Tier B – all tokens
+        else tier = 2;                        // Tier C – partial
+        return { r, rName, lat, lon, dist, nameRel, tier };
+    });
+
+    // Sort: tier ascending (best first), then relevance desc, then distance asc
+    entries.sort((a, b) => {
+        if (a.tier !== b.tier) return a.tier - b.tier;
+        if (a.nameRel !== b.nameRel) return b.nameRel - a.nameRel;
+        return a.dist - b.dist;
+    });
+
+    // Diagnostic logging
+    if (query) {
+        const R = 6371; // km
+        console.log(`[GeoRank] Query: "${query}" — ${entries.length} candidates:`);
+        for (const e of entries.slice(0, 8)) {
+            const dKm = isFinite(e.dist) ? (e.dist * R).toFixed(1) + 'km' : '?';
+            console.log(`  T${e.tier} | rel=${e.nameRel.toFixed(2)} dist=${dKm} | "${e.rName}"`);
+        }
+        console.log(`[GeoRank] Winner: "${entries[0].rName}" (tier=${entries[0].tier}, rel=${entries[0].nameRel.toFixed(2)})`);
     }
-    return best;
+
+    return entries[0].r;
 }
 
 async function tryNominatim(address, bounded = true) {
@@ -3842,8 +4063,12 @@ async function tryNominatim(address, bounded = true) {
         }
 
         const data = await response.json();
-        if (!data || data.length === 0) return null;
-        // Pick the result closest to the current map center (name-match preferred)
+        if (!data || data.length === 0) { console.log(`[Nominatim] bounded=${bounded} — 0 results`); return null; }
+        console.log(`[Nominatim] bounded=${bounded} — ${data.length} raw results:`);
+        for (const r of data.slice(0, 8)) {
+            const n = r.name || (r.namedetails && r.namedetails.name) || '';
+            console.log(`  name="${n}" display="${(r.display_name || '').slice(0, 80)}" [${r.lat}, ${r.lon}]`);
+        }
         return _pickClosestGeoResult(data, center, r => [parseFloat(r.lat), parseFloat(r.lon)], address);
     } catch (error) {
         console.warn('Nominatim error:', error);
@@ -3901,6 +4126,10 @@ async function tryPhoton(address) {
                     }
                 };
             });
+            console.log(`[Photon] ${converted.length} raw results:`);
+            for (const r of converted.slice(0, 8)) {
+                console.log(`  name="${r.name || ''}" [${r.lat}, ${r.lon}]`);
+            }
             return _pickClosestGeoResult(converted, center, r => [parseFloat(r.lat), parseFloat(r.lon)], address);
         }
         return null;
