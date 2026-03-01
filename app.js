@@ -479,45 +479,90 @@ function initMap() {
             L.DomEvent.disableClickPropagation(container);
             L.DomEvent.on(btn, 'click', (e) => {
                 L.DomEvent.preventDefault(e);
-                if (!currentPolygon) {
-                    // Flash the tooltip so the user sees why
+                const hasPin = searchAddressMarker && map.hasLayer(searchAddressMarker);
+                const hasPoly = !!currentPolygon;
+
+                if (!hasPoly && !hasPin) {
+                    // No polygon and no pin — flash tooltip
                     container.classList.remove('tooltip-dismissed');
                     container.classList.add('tooltip-visible');
                     setTimeout(() => container.classList.remove('tooltip-visible'), 2500);
                     return;
                 }
                 if (isFitZoom) {
-                    // Flash the tooltip so the user knows why
+                    // Already at fit (polygon or pin) — flash tooltip
                     container.classList.remove('tooltip-dismissed');
                     container.classList.add('tooltip-visible');
                     setTimeout(() => container.classList.remove('tooltip-visible'), 2500);
                     return;
                 }
-                // Re-calculate fit for the current map state
-                const padV = 10, padH = 10;
-                let padBottom = padV;
-                if (isMobileView()) {
-                    const mapEl = document.getElementById('map');
-                    if (document.body.classList.contains('results-open')) {
-                        padBottom = mapEl ? mapEl.offsetHeight * 0.5 + padV : padV;
-                    } else if (document.body.classList.contains('results-peeked')) {
-                        padBottom = TOASTER_LIP_HEIGHT + padV;
-                    }
+
+                // Decide target: whichever is closer to the current map center
+                let target = 'polygon';
+                if (hasPin && !hasPoly) {
+                    target = 'pin';
+                } else if (hasPin && hasPoly) {
+                    const mapCenter = map.getCenter();
+                    const pinLL = searchAddressMarker.getLatLng();
+                    const polyCenter = currentPolygon.getBounds().getCenter();
+                    const dPin = map.distance(mapCenter, pinLL);
+                    const dPoly = map.distance(mapCenter, polyCenter);
+                    target = dPin <= dPoly ? 'pin' : 'polygon';
                 }
-                const { center, zoom } = calculatePolygonFit(
-                    currentPolygon, map, padV, padH, padBottom, padH
-                );
-                const fitState = { center, zoom: Math.round(zoom * 100) / 100 };
+
                 // Pre-dismiss tooltip so mobile sticky :hover doesn't flash it
-                // once updateZoomFitButtonState adds tooltip-enabled after the fly
                 container.classList.add('tooltip-dismissed');
-                applyPolygonFit(fitState);
-                fitZoomValue = fitState.zoom;
+
+                if (target === 'pin') {
+                    // Fly to searched location pin at default zoom,
+                    // centered in the available canvas (above results overlay)
+                    const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
+                    const pinLL = searchAddressMarker.getLatLng();
+                    const offsetY = _getPinCenterOffsetY();
+                    let flyCenter = pinLL;
+                    if (offsetY > 0) {
+                        const pinPx = map.project(pinLL, targetZoom);
+                        flyCenter = map.unproject(L.point(pinPx.x, pinPx.y + offsetY), targetZoom);
+                    }
+                    isLocationSearchZoom = true;
+                    map.flyTo(flyCenter, targetZoom, { duration: 0.5 });
+                    const epoch = _clearEpoch;
+                    map.once('moveend', () => {
+                        isLocationSearchZoom = false;
+                        isFitZoom = true;
+                        activeFitState = { center: flyCenter, zoom: targetZoom };
+                        currentZoomLevel = map.getZoom() - initialZoom;
+                        updateZoomLevelIndicator();
+                        updateDrawButtonState();
+                        if (_clearEpoch !== epoch) return;
+                        if (map.hasLayer(searchAddressMarker)) searchAddressMarker.openPopup();
+                    });
+                } else {
+                    // Polygon fit (existing logic)
+                    const padV = 10, padH = 10;
+                    let padBottom = padV;
+                    if (isMobileView()) {
+                        const mapEl = document.getElementById('map');
+                        if (document.body.classList.contains('results-open')) {
+                            padBottom = mapEl ? mapEl.offsetHeight * 0.5 + padV : padV;
+                        } else if (document.body.classList.contains('results-peeked')) {
+                            padBottom = TOASTER_LIP_HEIGHT + padV;
+                        }
+                    }
+                    const { center, zoom } = calculatePolygonFit(
+                        currentPolygon, map, padV, padH, padBottom, padH
+                    );
+                    const fitState = { center, zoom: Math.round(zoom * 100) / 100 };
+                    applyPolygonFit(fitState);
+                    fitZoomValue = fitState.zoom;
+                }
             });
 
             // Mobile: touchstart fires on disabled controls (click may not)
             container.addEventListener('touchstart', () => {
-                if (!currentPolygon || isFitZoom) {
+                const hasPin = searchAddressMarker && map.hasLayer(searchAddressMarker);
+                const noTarget = !currentPolygon && !hasPin;
+                if (noTarget || isFitZoom) {
                     if (container.classList.contains('tooltip-dismissed')) {
                         container.classList.remove('tooltip-dismissed');
                     }
@@ -636,11 +681,35 @@ function initMap() {
         // Only mark as fit-zoom when an auto-fit animation is in progress
         isFitZoom = isAutoFittingPolygon && !Number.isInteger(z);
         if (isFitZoom) fitZoomValue = z;
-        if (!isFitZoom) activeFitState = null;
+        // Don't clear activeFitState during pin-fit fly — moveend callback sets it
+        if (!isFitZoom && !isLocationSearchZoom) activeFitState = null;
         currentZoomLevel = z - initialZoom;
         console.log(`Zoom level: ${currentZoomLevel} (absolute: ${z})${isFitZoom ? ` [FIT ${z.toFixed(2)}]` : ''}${isPinchZoom ? ' [PINCH]' : ''}`);
         updateZoomLevelIndicator();
         updateDrawButtonState();
+    });
+
+    // Detect user dragging away from fit center — reactivate fit button immediately
+    map.on('dragstart', () => {
+        if (!isFitZoom) return;
+        isFitZoom = false;
+        activeFitState = null;
+        updateZoomFitButtonState();
+    });
+
+    // Fallback drift detection for programmatic moves (e.g. panTo)
+    map.on('moveend', () => {
+        if (!isFitZoom || !activeFitState || isAutoFittingPolygon || isLocationSearchZoom) return;
+        // Compare current center to fit center in pixel space
+        const fitPx = map.latLngToContainerPoint(activeFitState.center);
+        const size = map.getSize();
+        const cx = size.x / 2, cy = size.y / 2;
+        const drift = Math.hypot(fitPx.x - cx, fitPx.y - cy);
+        if (drift > 5) {
+            isFitZoom = false;
+            activeFitState = null;
+            updateZoomFitButtonState();
+        }
     });
 
     // Force zoom control buttons to go to the next integer step (no manual decimal zoom).
@@ -885,13 +954,14 @@ function updateZoomFitButtonState() {
     if (!fitBtn || !container) return;
 
     const tooltip = container.querySelector('.zoomfit-tooltip');
-    const noPolygon = !currentPolygon;
+    const hasPin = searchAddressMarker && map.hasLayer(searchAddressMarker);
+    const noTarget = !currentPolygon && !hasPin;
 
-    const atFit = !noPolygon && isFitZoom;
-    const showTooltip = noPolygon || atFit;
+    const atFit = isFitZoom;
+    const showTooltip = noTarget || atFit;
 
-    // No-polygon disabled state (keeps pointer-events for tooltip interaction)
-    fitBtn.classList.toggle('no-polygon', noPolygon);
+    // No-target disabled state (keeps pointer-events for tooltip interaction)
+    fitBtn.classList.toggle('no-polygon', noTarget);
     // isFitZoom disabled state (keeps pointer-events for tooltip interaction)
     fitBtn.classList.toggle('disabled', atFit);
     container.classList.toggle('tooltip-enabled', showTooltip);
@@ -901,10 +971,10 @@ function updateZoomFitButtonState() {
     }
 
     if (tooltip) {
-        if (noPolygon) {
+        if (noTarget) {
             tooltip.innerHTML =
                 '<div class="draw-tooltip-text">' +
-                    '<span>Draw a shape first to zoom fit</span>' +
+                    '<span>Search a location or draw a shape first</span>' +
                 '</div>' +
                 '<button class="draw-tooltip-close" aria-label="Close">\u00d7</button>';
         } else if (atFit) {
@@ -1605,6 +1675,41 @@ function removeCurrentPolygon() {
 // Polygon Utilities
 // =============================================================================
 
+/**
+ * Decide whether sidebar transitions should recenter on the location pin
+ * or the polygon center.
+ *
+ * Rules:
+ *   1. No location pin → 'polygon'
+ *   2. No polygon      → 'pin'
+ *   3. Pin INSIDE polygon → 'pin'
+ *   4. Pin OUTSIDE polygon → whichever is closer to the current map center
+ *
+ * @returns {'pin'|'polygon'}
+ */
+function _getSidebarRecenterTarget() {
+    const hasPin = searchAddressMarker && map.hasLayer(searchAddressMarker);
+    const hasPoly = !!currentPolygon;
+
+    if (!hasPin && !hasPoly) return 'polygon';
+    if (!hasPin) return 'polygon';
+    if (!hasPoly) return 'pin';
+
+    // Check if pin is inside the polygon
+    const pinLL = searchAddressMarker.getLatLng();
+    const pinCoord = [pinLL.lat, pinLL.lng];
+    if (drawingPoints.length >= 3 && pointInPolygon(pinCoord, drawingPoints)) {
+        return 'pin';
+    }
+
+    // Pin is outside polygon — pick whichever is closer to current map center
+    const mapCenter = map.getCenter();
+    const polyCenter = currentPolygon.getBounds().getCenter();
+    const dPin = map.distance(mapCenter, pinLL);
+    const dPoly = map.distance(mapCenter, polyCenter);
+    return dPin <= dPoly ? 'pin' : 'polygon';
+}
+
 function getPolygonBounds() {
     if (!currentPolygon) return null;
     return currentPolygon.getBounds();
@@ -1661,6 +1766,8 @@ function normalizeFilterToken(token) {
     return String(token || '')
         .trim()
         .toLowerCase()
+        .normalize('NFD')              // decompose accents: é → e + combining accent
+        .replace(/[\u0300-\u036f]/g, '') // strip combining diacritical marks
         .replace(/[_-]+/g, ' ')
         .replace(/[^a-z0-9\s]/g, '')
         .replace(/\s+/g, ' ');
@@ -1718,6 +1825,35 @@ function levenshteinDistance(a, b, maxDist) {
     return v0[bl];
 }
 
+// Synonym groups: any token in a group also matches the other members.
+// Normalized (lowercase, no accents/punctuation) forms only.
+const FILTER_SYNONYM_GROUPS = [
+    ['cafe', 'coffee shop'],
+];
+// Build a fast lookup: normalized token → set of synonyms (including itself)
+const _filterSynonyms = (() => {
+    const map = new Map();
+    for (const group of FILTER_SYNONYM_GROUPS) {
+        for (const word of group) {
+            const existing = map.get(word) || new Set();
+            for (const other of group) existing.add(other);
+            map.set(word, existing);
+        }
+    }
+    return map;
+})();
+
+function getFilterSynonyms(normalizedToken) {
+    // Direct lookup
+    const direct = _filterSynonyms.get(normalizedToken);
+    if (direct) return direct;
+    // Also check if the token is a stem/substring of a synonym key
+    for (const [key, syns] of _filterSynonyms) {
+        if (key.includes(normalizedToken) || normalizedToken.includes(key)) return syns;
+    }
+    return null;
+}
+
 function tokenMatchesField(token, field) {
     const t = normalizeFilterToken(token);
     const f = normalizeFilterToken(field);
@@ -1727,6 +1863,16 @@ function tokenMatchesField(token, field) {
     const fs = simpleStem(f);
 
     if (f.includes(t) || t.includes(f) || fs.includes(ts) || ts.includes(fs)) return true;
+
+    // Synonym expansion: "cafe" ↔ "coffee shop" etc.
+    const syns = getFilterSynonyms(t);
+    if (syns) {
+        for (const syn of syns) {
+            if (syn === t) continue;
+            const ss = simpleStem(syn);
+            if (f.includes(syn) || syn.includes(f) || fs.includes(ss) || ss.includes(fs)) return true;
+        }
+    }
 
     // Fuzzy: allow small typos for practical autocorrect-like behavior.
     const maxDist = t.length <= 4 ? 1 : (t.length <= 8 ? 2 : 3);
@@ -2966,6 +3112,34 @@ function clearHighlightedMarker() {
     _highlightedMarkerIndex = null;
 }
 
+/**
+ * Compute the vertical pixel offset needed to center a point in the
+ * available canvas area (above the results overlay) rather than the
+ * full map canvas.  Returns 0 on desktop or when no overlay is visible.
+ */
+function _getPinCenterOffsetY() {
+    if (!isMobileView()) return 0;
+    const mapEl = document.getElementById('map');
+    if (!mapEl) return 0;
+    const mapH = mapEl.offsetHeight;
+
+    if (document.body.classList.contains('results-open') ||
+        document.body.classList.contains('results-expanded')) {
+        const sidebar = document.getElementById('results-sidebar');
+        if (sidebar) {
+            const sidebarRect = sidebar.getBoundingClientRect();
+            const mapRect = mapEl.getBoundingClientRect();
+            const availableH = sidebarRect.top - mapRect.top;
+            if (availableH > 50) {
+                return (mapH / 2) - (availableH / 2);
+            }
+        }
+    } else if (document.body.classList.contains('results-peeked')) {
+        return TOASTER_LIP_HEIGHT / 2;
+    }
+    return 0;
+}
+
 function panToMarkerInView(marker) {
     const markerLatLng = marker.getLatLng();
     if (isMobileView()) {
@@ -3342,12 +3516,79 @@ function highlightPlace(index) {
 // Track last search time to enforce rate limiting
 let lastSearchTime = 0;
 const MIN_SEARCH_INTERVAL = 1000; // 1 second between searches
+let _lastSearchedAddress = null;  // tracks the string that produced the current pin
+
+// ── localStorage geocode cache ──────────────────────────────────────────
+const _GEO_CACHE_KEY = 'laso_geocode_cache_v2';
+const _GEO_CACHE_MAX = 200;
+
+function _loadGeoCache() {
+    try {
+        return JSON.parse(localStorage.getItem(_GEO_CACHE_KEY)) || {};
+    } catch { return {}; }
+}
+function _saveGeoCache(cache) {
+    // Evict oldest entries when over limit
+    const keys = Object.keys(cache);
+    if (keys.length > _GEO_CACHE_MAX) {
+        keys.sort((a, b) => (cache[a]._ts || 0) - (cache[b]._ts || 0));
+        while (keys.length > _GEO_CACHE_MAX) delete cache[keys.shift()];
+    }
+    try { localStorage.setItem(_GEO_CACHE_KEY, JSON.stringify(cache)); } catch {}
+}
+function _geoCacheKey(address) {
+    return address.trim().toLowerCase().replace(/['\u2018\u2019]/g, '').replace(/\s+/g, ' ');
+}
+
+/**
+ * Strip apostrophes / curly quotes and lowercase for name comparison.
+ * Allows "trader joes" to match "Trader Joe's" etc.
+ */
+function _normalizeForMatch(str) {
+    return str.replace(/['\u2018\u2019]/g, '').toLowerCase();
+}
+// ─────────────────────────────────────────────────────────────────────────
 
 async function searchAddress() {
     const input = document.getElementById('address-input');
     const address = input.value.trim();
 
     if (!address) return;
+
+    // Same string already searched and pin is on the map → just recenter
+    const normAddr = _geoCacheKey(address);
+    if (normAddr === _lastSearchedAddress && searchAddressMarker && map.hasLayer(searchAddressMarker)) {
+        const pinLatLng = searchAddressMarker.getLatLng();
+        const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
+        const offsetY = _getPinCenterOffsetY();
+        let flyCenter = pinLatLng;
+        if (offsetY > 0) {
+            const pinPx = map.project(pinLatLng, targetZoom);
+            flyCenter = map.unproject(L.point(pinPx.x, pinPx.y + offsetY), targetZoom);
+        }
+        isLocationSearchZoom = true;
+        map.flyTo(flyCenter, targetZoom, { duration: 1.0 });
+        const epoch = _clearEpoch;
+        map.once('moveend', () => {
+            isLocationSearchZoom = false;
+            currentZoomLevel = map.getZoom() - initialZoom;
+            updateZoomLevelIndicator();
+            updateDrawButtonState();
+            if (_clearEpoch !== epoch) return;
+            if (map.hasLayer(searchAddressMarker)) searchAddressMarker.openPopup();
+        });
+        updateStatus('Re-centering on location');
+        return;
+    }
+
+    // Check localStorage cache
+    const cache = _loadGeoCache();
+    const cached = cache[normAddr];
+    if (cached) {
+        _lastSearchedAddress = normAddr;
+        displayGeocodeResult(cached, address);
+        return;
+    }
 
     // Enforce rate limiting
     const now = Date.now();
@@ -3362,17 +3603,39 @@ async function searchAddress() {
     showLoading(true, 'Searching for location...');
     updateStatus('Searching for address...', true);
 
-    try {
-        // Try Nominatim first
-        let result = await tryNominatim(address);
+    const center = map.getCenter();
 
-        // If Nominatim fails, try Photon
-        if (!result) {
-            updateStatus('Trying alternative geocoder...');
-            result = await tryPhoton(address);
+    try {
+        // Phase 1: Fire both geocoders in parallel with strong proximity bias.
+        // Photon has native lat/lon proximity; Nominatim uses bounded viewbox (±2°).
+        const [nominatimResult, photonResult] = await Promise.all([
+            tryNominatim(address, true),    // bounded=1, ±2° ≈ 220 km hard fence
+            tryPhoton(address)              // native lat/lon proximity bias
+        ]);
+
+        let candidates = [nominatimResult, photonResult].filter(Boolean);
+
+        // Phase 2: If both proximity-biased searches failed, try Nominatim
+        // globally (bounded=0).  This covers obscure addresses with no nearby match.
+        if (candidates.length === 0) {
+            updateStatus('Trying wider search...');
+            const globalResult = await tryNominatim(address, false);
+            if (globalResult) candidates = [globalResult];
         }
 
-        if (result) {
+        if (candidates.length > 0) {
+            // Pick the candidate closest to map center (both already name-filtered)
+            const result = candidates.length === 1
+                ? candidates[0]
+                : _pickClosestGeoResult(candidates, center,
+                    r => [parseFloat(r.lat), parseFloat(r.lon)], address);
+
+            // Cache in localStorage
+            result._ts = Date.now();
+            cache[normAddr] = result;
+            _saveGeoCache(cache);
+            _lastSearchedAddress = normAddr;
+
             displayGeocodeResult(result, address);
         } else {
             updateStatus('Address search failed');
@@ -3383,18 +3646,69 @@ async function searchAddress() {
     }
 }
 
-async function tryNominatim(address) {
+/**
+ * From an array of geocode results, return the one closest to `center`.
+ * `getLatLon` extracts [lat, lon] from a result object.
+ * If `query` is provided, prefer results whose name matches the query
+ * (apostrophe-insensitive) before falling back to pure distance.
+ */
+function _pickClosestGeoResult(results, center, getLatLon, query) {
+    if (results.length === 1) return results[0];
+
+    // When a query is provided, prefer results whose name matches it
+    let candidates = results;
+    if (query) {
+        const normQuery = _normalizeForMatch(query);
+        const nameMatches = results.filter(r => {
+            const name = r.name || (r.namedetails && r.namedetails.name) || r.display_name || '';
+            const normName = _normalizeForMatch(name);
+            return normName.includes(normQuery) || normQuery.includes(normName);
+        });
+        if (nameMatches.length > 0) candidates = nameMatches;
+    }
+
+    const toRad = d => d * Math.PI / 180;
+    const cLat = toRad(center.lat);
+    const cLon = toRad(center.lng);
+
+    let best = candidates[0];
+    let bestDist = Infinity;
+    for (const r of candidates) {
+        const [lat, lon] = getLatLon(r);
+        if (isNaN(lat) || isNaN(lon)) continue;
+        const rLat = toRad(lat);
+        const rLon = toRad(lon);
+        const dLat = rLat - cLat;
+        const dLon = rLon - cLon;
+        // Haversine
+        const a = Math.sin(dLat / 2) ** 2 +
+                  Math.cos(cLat) * Math.cos(rLat) * Math.sin(dLon / 2) ** 2;
+        const dist = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        if (dist < bestDist) {
+            bestDist = dist;
+            best = r;
+        }
+    }
+    return best;
+}
+
+async function tryNominatim(address, bounded = true) {
+    const center = map.getCenter();
+    // bounded=true  → ±2° ≈ 220 km hard fence (forces nearby results)
+    // bounded=false → ±0.5° soft hint, global fallback
+    const bias = bounded ? 2.0 : 0.5;
+
     const params = new URLSearchParams({
         q: address,
         format: 'json',
-        limit: '5',
+        limit: '10',
         addressdetails: '1',
         namedetails: '1',
         'accept-language': 'en'
     });
 
-    // Don't use viewbox bias - it causes wrong results when searching specific addresses
-    // Just search globally for the exact address
+    params.set('viewbox', `${center.lng - bias},${center.lat + bias},${center.lng + bias},${center.lat - bias}`);
+    params.set('bounded', bounded ? '1' : '0');
 
     try {
         const response = await fetch(`${NOMINATIM_URL}/search?${params.toString()}`, {
@@ -3411,7 +3725,9 @@ async function tryNominatim(address) {
         }
 
         const data = await response.json();
-        return data && data.length > 0 ? data[0] : null;
+        if (!data || data.length === 0) return null;
+        // Pick the result closest to the current map center (name-match preferred)
+        return _pickClosestGeoResult(data, center, r => [parseFloat(r.lat), parseFloat(r.lon)], address);
     } catch (error) {
         console.warn('Nominatim error:', error);
         return null;
@@ -3422,12 +3738,14 @@ async function tryPhoton(address) {
     // Photon uses different parameter structure
     const params = new URLSearchParams({
         q: address,
-        limit: '5',
+        limit: '10',
         lang: 'en'
     });
 
-    // DON'T add location bias - it causes wrong results
-    // Just search for the exact address as typed
+    // Add proximity bias so business-name searches prefer nearby results.
+    const center = map.getCenter();
+    params.set('lat', center.lat.toFixed(6));
+    params.set('lon', center.lng.toFixed(6));
 
     try {
         const response = await fetch(`${PHOTON_URL}?${params.toString()}`, {
@@ -3446,26 +3764,27 @@ async function tryPhoton(address) {
 
         // Photon returns features array
         if (data && data.features && data.features.length > 0) {
-            const feature = data.features[0];
-            const props = feature.properties;
-            const coords = feature.geometry.coordinates;
-
-            // Convert Photon format to match Nominatim format
-            return {
-                lat: coords[1],
-                lon: coords[0],
-                display_name: props.name || address,
-                name: props.name,
-                address: {
-                    house_number: props.housenumber,
-                    road: props.street,
-                    city: props.city,
-                    town: props.district,
-                    village: props.district,
-                    state: props.state,
-                    postcode: props.postcode
-                }
-            };
+            // Convert all features to Nominatim-like format, then pick closest
+            const converted = data.features.map(f => {
+                const p = f.properties;
+                const c = f.geometry.coordinates;
+                return {
+                    lat: c[1],
+                    lon: c[0],
+                    display_name: p.name || address,
+                    name: p.name,
+                    address: {
+                        house_number: p.housenumber,
+                        road: p.street,
+                        city: p.city,
+                        town: p.district,
+                        village: p.district,
+                        state: p.state,
+                        postcode: p.postcode
+                    }
+                };
+            });
+            return _pickClosestGeoResult(converted, center, r => [parseFloat(r.lat), parseFloat(r.lon)], address);
         }
         return null;
     } catch (error) {
@@ -3510,11 +3829,19 @@ function displayGeocodeResult(result, searchQuery) {
 
     marker.bindPopup(`<b>${result.name || searchQuery}</b><br>${displayAddress}`);
     searchAddressMarker = marker;
+    updateZoomFitButtonState();
 
-    // Fly to address at target display level (PC: 3, mobile: 2)
+    // Fly to address at target display level (PC: 3, mobile: 2),
+    // centered in the available canvas (above results overlay if visible)
     const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
+    const offsetY = _getPinCenterOffsetY();
+    let flyCenter = [lat, lon];
+    if (offsetY > 0) {
+        const pinPx = map.project(L.latLng(lat, lon), targetZoom);
+        flyCenter = map.unproject(L.point(pinPx.x, pinPx.y + offsetY), targetZoom);
+    }
     isLocationSearchZoom = true;
-    map.flyTo([lat, lon], targetZoom, { duration: 1.0 });
+    map.flyTo(flyCenter, targetZoom, { duration: 1.0 });
     const epochAtSearch = _clearEpoch;
     map.once('moveend', () => {
         isLocationSearchZoom = false;
@@ -3949,6 +4276,8 @@ function clearAll() {
         if (map.hasLayer(searchAddressMarker)) map.removeLayer(searchAddressMarker);
         searchAddressMarker = null;
     }
+    _lastSearchedAddress = null;
+    updateZoomFitButtonState();
 
     // ── 2. Remove all tracked markers BEFORE map.stop() so that any
     //       synchronously-fired moveend handlers see hasLayer() === false.
@@ -4094,8 +4423,21 @@ function openSidebar() {
 
         // Apply results-open fit when re-opening from lip.  Skip if a fly
         // animation is already in progress (e.g. called right after performLasoSearch).
-        if (fitStateResultsOpen && !isAutoFittingPolygon) {
-            applyPolygonFit(fitStateResultsOpen);
+        if (!isAutoFittingPolygon) {
+            if (_getSidebarRecenterTarget() === 'pin') {
+                const targetZoom = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                const pinLatLng = searchAddressMarker.getLatLng();
+                map.stop();
+                isAutoFittingPolygon = true;
+                map.flyTo(pinLatLng, targetZoom, { duration: 0.5 });
+                const epoch = _clearEpoch;
+                map.once('moveend', () => {
+                    isAutoFittingPolygon = false;
+                    if (_clearEpoch !== epoch) return;
+                });
+            } else if (fitStateResultsOpen) {
+                applyPolygonFit(fitStateResultsOpen);
+            }
         }
 
         // After the sidebar reaches midway, highlight the pending card so the
@@ -4167,7 +4509,28 @@ function closeSidebar() {
             }
         }
 
-        if (fitStateLipPeeked) {
+        // Smart recenter: pin inside polygon → pin; pin outside → closer to map center
+        if (_getSidebarRecenterTarget() === 'pin') {
+            const targetZoom = fitStateLipPeeked ? fitStateLipPeeked.zoom : map.getZoom();
+            const pinLatLng = searchAddressMarker.getLatLng();
+            const offsetY = TOASTER_LIP_HEIGHT / 2;
+            const pinPoint = map.project(pinLatLng, targetZoom);
+            const mapCenter = map.unproject(
+                L.point(pinPoint.x, pinPoint.y + offsetY),
+                targetZoom
+            );
+            map.stop();
+            isAutoFittingPolygon = true;
+            map.flyTo(mapCenter, targetZoom, { duration: 0.5 });
+            const epoch = _clearEpoch;
+            map.once('moveend', () => {
+                isAutoFittingPolygon = false;
+                if (_clearEpoch !== epoch) return;
+                if (map.hasLayer(searchAddressMarker)) {
+                    searchAddressMarker.openPopup();
+                }
+            });
+        } else if (fitStateLipPeeked) {
             applyPolygonFit(fitStateLipPeeked);
         }
     } else {
@@ -4184,7 +4547,20 @@ function toggleMobileSheet() {
     if (isExpanded) {
         // From fully expanded → go to mid-point (half-open), not close
         document.body.classList.remove('results-expanded');
-        if (fitStateResultsOpen) applyPolygonFit(fitStateResultsOpen);
+        if (_getSidebarRecenterTarget() === 'pin') {
+            const targetZoom = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+            const pinLatLng = searchAddressMarker.getLatLng();
+            map.stop();
+            isAutoFittingPolygon = true;
+            map.flyTo(pinLatLng, targetZoom, { duration: 0.5 });
+            const epoch = _clearEpoch;
+            map.once('moveend', () => {
+                isAutoFittingPolygon = false;
+                if (_clearEpoch !== epoch) return;
+            });
+        } else if (fitStateResultsOpen) {
+            applyPolygonFit(fitStateResultsOpen);
+        }
         onSidebarTransitionEnd(updateResultsSpacer);
     } else if (sidebar.classList.contains('open')) {
         closeSidebar();
@@ -4387,7 +4763,16 @@ function setupSheetDragGesture() {
         } else if (targetId === 'half-open') {
             if (isExpanded) {
                 document.body.classList.remove('results-expanded');
-                if (fitStateResultsOpen) applyPolygonFit(fitStateResultsOpen);
+                if (_getSidebarRecenterTarget() === 'pin') {
+                    const tz = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                    map.stop();
+                    isAutoFittingPolygon = true;
+                    map.flyTo(searchAddressMarker.getLatLng(), tz, { duration: 0.5 });
+                    const ep = _clearEpoch;
+                    map.once('moveend', () => { isAutoFittingPolygon = false; if (_clearEpoch !== ep) return; });
+                } else if (fitStateResultsOpen) {
+                    applyPolygonFit(fitStateResultsOpen);
+                }
             } else if (!isOpen) {
                 // Detect open popup or green marker BEFORE applyPolygonFit closes it
                 let dragHighlightIdx = null;
@@ -4405,7 +4790,16 @@ function setupSheetDragGesture() {
                 document.body.classList.add('results-peeked');
                 const mapEl = document.getElementById('map');
                 if (mapEl) sidebar.style.height = mapEl.offsetHeight + 'px';
-                if (fitStateResultsOpen) applyPolygonFit(fitStateResultsOpen);
+                if (_getSidebarRecenterTarget() === 'pin') {
+                    const tz = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                    map.stop();
+                    isAutoFittingPolygon = true;
+                    map.flyTo(searchAddressMarker.getLatLng(), tz, { duration: 0.5 });
+                    const ep = _clearEpoch;
+                    map.once('moveend', () => { isAutoFittingPolygon = false; if (_clearEpoch !== ep) return; });
+                } else if (fitStateResultsOpen) {
+                    applyPolygonFit(fitStateResultsOpen);
+                }
                 // After sidebar settles, highlight the pending card.
                 // Merge highlight + cleanup into ONE callback so the cleanup's
                 // updateResultsSpacer doesn't disrupt the smooth scroll that
@@ -4425,7 +4819,25 @@ function setupSheetDragGesture() {
                 sidebar.classList.remove('open');
                 document.body.classList.remove('results-open');
                 document.body.classList.add('results-peeked');
-                if (fitStateLipPeeked) applyPolygonFit(fitStateLipPeeked);
+                // Smart recenter: pin inside polygon → pin; pin outside → closer to map center
+                if (_getSidebarRecenterTarget() === 'pin') {
+                    const targetZoom = fitStateLipPeeked ? fitStateLipPeeked.zoom : map.getZoom();
+                    const pinLatLng = searchAddressMarker.getLatLng();
+                    const offsetY = TOASTER_LIP_HEIGHT / 2;
+                    const pinPoint = map.project(pinLatLng, targetZoom);
+                    const mc = map.unproject(L.point(pinPoint.x, pinPoint.y + offsetY), targetZoom);
+                    map.stop();
+                    isAutoFittingPolygon = true;
+                    map.flyTo(mc, targetZoom, { duration: 0.5 });
+                    const epoch = _clearEpoch;
+                    map.once('moveend', () => {
+                        isAutoFittingPolygon = false;
+                        if (_clearEpoch !== epoch) return;
+                        if (map.hasLayer(searchAddressMarker)) searchAddressMarker.openPopup();
+                    });
+                } else if (fitStateLipPeeked) {
+                    applyPolygonFit(fitStateLipPeeked);
+                }
                 // Close popup — selected pin stays green+large as visual guide
                 if (selectedPlaceIndex !== null) {
                     _isChangingSelection = true;
