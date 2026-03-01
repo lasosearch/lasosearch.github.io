@@ -1485,8 +1485,6 @@ function closeFreehandPolygon() {
         fillOpacity: 0.2,
         weight: 3
     }).addTo(map);
-    updateDrawButtonState();
-    updateZoomFitButtonState();
 
     // Store as array format [lat, lng] for compatibility with existing code
     // Also close the polygon for proper filtering
@@ -1502,17 +1500,20 @@ function closeFreehandPolygon() {
     }
 
     // DON'T call disableDrawingMode() - it clears drawingPoints!
-    // Manually set flags instead
+    // Clear drawing flags BEFORE updateDrawButtonState so !isDrawingMode
+    // lets the label switch to "Draw Clear" immediately.
     isDrawingMode = false;
     isDrawing = false;
     isMouseDown = false;
+
+    updateDrawButtonState();
+    updateZoomFitButtonState();
 
     const drawBtn = document.getElementById('drawing-toggle');
     const overlay = document.getElementById('drawing-overlay');
     const statusIndicator = document.getElementById('status-indicator');
 
     drawBtn.classList.remove('active');
-    // Text/icon set by updateDrawButtonState() above — polygon exists → "Draw Clear"
     overlay.classList.add('hidden');
     statusIndicator.classList.remove('drawing');
     map.getContainer().style.cursor = '';
