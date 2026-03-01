@@ -4924,28 +4924,53 @@ function openSidebar() {
 
         // Apply results-open fit when re-opening from lip.  Skip if a fly
         // animation is already in progress (e.g. called right after performLasoSearch).
+        //
+        // Priority (mirrors closeSidebar / peeked-state logic):
+        //   1. Selected business pin  → center on it
+        //   2. Search location pin    → only if no selected pin AND
+        //      _getSidebarRecenterTarget() says 'pin'
+        //   3. Polygon fit            → fallback
         if (!isAutoFittingPolygon) {
-            if (_getSidebarRecenterTarget() === 'pin') {
-                const targetZoom = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
-                const pinLatLng = searchAddressMarker.getLatLng();
-                const offsetCenter = _pinCenterForOverlay(pinLatLng, targetZoom);
-                map.stop();
-                isAutoFittingPolygon = true;
-                map.flyTo(offsetCenter, targetZoom, { duration: 0.5 });
-                const epoch = _clearEpoch;
-                map.once('moveend', () => {
-                    isAutoFittingPolygon = false;
-                    if (_clearEpoch !== epoch) return;
-                    // Safety-net correction after sidebar transition settles
-                    onSidebarTransitionEnd(() => {
+            let centeredOnSelected = false;
+            if (pendingHighlightIdx !== null && markers.length > 0) {
+                const selectedMarker = markers.find(m => m.placeIndex === pendingHighlightIdx);
+                if (selectedMarker && map.hasLayer(selectedMarker)) {
+                    const targetZoom = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                    const pinLatLng = selectedMarker.getLatLng();
+                    const offsetCenter = _pinCenterForOverlay(pinLatLng, targetZoom);
+                    map.stop();
+                    isAutoFittingPolygon = true;
+                    map.flyTo(offsetCenter, targetZoom, { duration: 0.5 });
+                    const epoch = _clearEpoch;
+                    map.once('moveend', () => {
+                        isAutoFittingPolygon = false;
                         if (_clearEpoch !== epoch) return;
-                        if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
-                            _panToAvailableCanvas(searchAddressMarker.getLatLng());
-                        }
                     });
-                });
-            } else if (fitStateResultsOpen) {
-                applyPolygonFit(fitStateResultsOpen);
+                    centeredOnSelected = true;
+                }
+            }
+            if (!centeredOnSelected) {
+                if (_getSidebarRecenterTarget() === 'pin') {
+                    const targetZoom = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                    const pinLatLng = searchAddressMarker.getLatLng();
+                    const offsetCenter = _pinCenterForOverlay(pinLatLng, targetZoom);
+                    map.stop();
+                    isAutoFittingPolygon = true;
+                    map.flyTo(offsetCenter, targetZoom, { duration: 0.5 });
+                    const epoch = _clearEpoch;
+                    map.once('moveend', () => {
+                        isAutoFittingPolygon = false;
+                        if (_clearEpoch !== epoch) return;
+                        onSidebarTransitionEnd(() => {
+                            if (_clearEpoch !== epoch) return;
+                            if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
+                                _panToAvailableCanvas(searchAddressMarker.getLatLng());
+                            }
+                        });
+                    });
+                } else if (fitStateResultsOpen) {
+                    applyPolygonFit(fitStateResultsOpen);
+                }
             }
         }
 
@@ -5054,28 +5079,48 @@ function toggleMobileSheet() {
     const sidebar = document.getElementById('results-sidebar');
     const isExpanded = document.body.classList.contains('results-expanded');
     if (isExpanded) {
-        // From fully expanded → go to mid-point (half-open), not close
+        // From fully expanded → go to mid-point (half-open), not close.
+        // Priority: selected business pin → search location pin → polygon.
         document.body.classList.remove('results-expanded');
-        if (_getSidebarRecenterTarget() === 'pin') {
-            const targetZoom = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
-            const pinLatLng = searchAddressMarker.getLatLng();
-            const offsetCenter = _pinCenterForOverlay(pinLatLng, targetZoom);
-            map.stop();
-            isAutoFittingPolygon = true;
-            map.flyTo(offsetCenter, targetZoom, { duration: 0.5 });
-            const epoch = _clearEpoch;
-            map.once('moveend', () => {
-                isAutoFittingPolygon = false;
-                if (_clearEpoch !== epoch) return;
-                onSidebarTransitionEnd(() => {
-                    if (_clearEpoch !== epoch) return;
-                    if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
-                        _panToAvailableCanvas(searchAddressMarker.getLatLng());
-                    }
+        let _tmsCentered = false;
+        if (selectedPlaceIndex !== null && markers.length > 0) {
+            const selMarker = markers.find(m => m.placeIndex === selectedPlaceIndex);
+            if (selMarker && map.hasLayer(selMarker)) {
+                const tz = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                const oc = _pinCenterForOverlay(selMarker.getLatLng(), tz);
+                map.stop();
+                isAutoFittingPolygon = true;
+                map.flyTo(oc, tz, { duration: 0.5 });
+                const ep = _clearEpoch;
+                map.once('moveend', () => {
+                    isAutoFittingPolygon = false;
+                    if (ep !== _clearEpoch) return;
                 });
-            });
-        } else if (fitStateResultsOpen) {
-            applyPolygonFit(fitStateResultsOpen);
+                _tmsCentered = true;
+            }
+        }
+        if (!_tmsCentered) {
+            if (_getSidebarRecenterTarget() === 'pin') {
+                const targetZoom = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                const pinLatLng = searchAddressMarker.getLatLng();
+                const offsetCenter = _pinCenterForOverlay(pinLatLng, targetZoom);
+                map.stop();
+                isAutoFittingPolygon = true;
+                map.flyTo(offsetCenter, targetZoom, { duration: 0.5 });
+                const epoch = _clearEpoch;
+                map.once('moveend', () => {
+                    isAutoFittingPolygon = false;
+                    if (_clearEpoch !== epoch) return;
+                    onSidebarTransitionEnd(() => {
+                        if (_clearEpoch !== epoch) return;
+                        if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
+                            _panToAvailableCanvas(searchAddressMarker.getLatLng());
+                        }
+                    });
+                });
+            } else if (fitStateResultsOpen) {
+                applyPolygonFit(fitStateResultsOpen);
+            }
         }
         onSidebarTransitionEnd(updateResultsSpacer);
     } else if (sidebar.classList.contains('open')) {
@@ -5279,16 +5324,33 @@ function setupSheetDragGesture() {
         } else if (targetId === 'half-open') {
             if (isExpanded) {
                 document.body.classList.remove('results-expanded');
-                if (_getSidebarRecenterTarget() === 'pin') {
-                    const tz = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
-                    const offsetCenter = _pinCenterForOverlay(searchAddressMarker.getLatLng(), tz);
-                    map.stop();
-                    isAutoFittingPolygon = true;
-                    map.flyTo(offsetCenter, tz, { duration: 0.5 });
-                    const ep = _clearEpoch;
-                    map.once('moveend', () => { isAutoFittingPolygon = false; if (_clearEpoch !== ep) return; });
-                } else if (fitStateResultsOpen) {
-                    applyPolygonFit(fitStateResultsOpen);
+                // Priority: selected business pin → search location pin → polygon
+                let _sdgCentered = false;
+                if (selectedPlaceIndex !== null && markers.length > 0) {
+                    const selM = markers.find(m => m.placeIndex === selectedPlaceIndex);
+                    if (selM && map.hasLayer(selM)) {
+                        const tz = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                        const oc = _pinCenterForOverlay(selM.getLatLng(), tz);
+                        map.stop();
+                        isAutoFittingPolygon = true;
+                        map.flyTo(oc, tz, { duration: 0.5 });
+                        const ep = _clearEpoch;
+                        map.once('moveend', () => { isAutoFittingPolygon = false; if (_clearEpoch !== ep) return; });
+                        _sdgCentered = true;
+                    }
+                }
+                if (!_sdgCentered) {
+                    if (_getSidebarRecenterTarget() === 'pin') {
+                        const tz = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                        const offsetCenter = _pinCenterForOverlay(searchAddressMarker.getLatLng(), tz);
+                        map.stop();
+                        isAutoFittingPolygon = true;
+                        map.flyTo(offsetCenter, tz, { duration: 0.5 });
+                        const ep = _clearEpoch;
+                        map.once('moveend', () => { isAutoFittingPolygon = false; if (_clearEpoch !== ep) return; });
+                    } else if (fitStateResultsOpen) {
+                        applyPolygonFit(fitStateResultsOpen);
+                    }
                 }
             } else if (!isOpen) {
                 // Detect open popup or green marker BEFORE applyPolygonFit closes it
@@ -5307,25 +5369,42 @@ function setupSheetDragGesture() {
                 document.body.classList.add('results-peeked');
                 const mapEl = document.getElementById('map');
                 if (mapEl) sidebar.style.height = mapEl.offsetHeight + 'px';
-                if (_getSidebarRecenterTarget() === 'pin') {
-                    const tz = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
-                    const offsetCenter = _pinCenterForOverlay(searchAddressMarker.getLatLng(), tz);
-                    map.stop();
-                    isAutoFittingPolygon = true;
-                    map.flyTo(offsetCenter, tz, { duration: 0.5 });
-                    const ep = _clearEpoch;
-                    map.once('moveend', () => {
-                        isAutoFittingPolygon = false;
-                        if (_clearEpoch !== ep) return;
-                        onSidebarTransitionEnd(() => {
+                // Priority: selected business pin → search location pin → polygon
+                let _sdgOpenCentered = false;
+                if (dragHighlightIdx !== null && markers.length > 0) {
+                    const selM = markers.find(m => m.placeIndex === dragHighlightIdx);
+                    if (selM && map.hasLayer(selM)) {
+                        const tz = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                        const oc = _pinCenterForOverlay(selM.getLatLng(), tz);
+                        map.stop();
+                        isAutoFittingPolygon = true;
+                        map.flyTo(oc, tz, { duration: 0.5 });
+                        const ep = _clearEpoch;
+                        map.once('moveend', () => { isAutoFittingPolygon = false; if (_clearEpoch !== ep) return; });
+                        _sdgOpenCentered = true;
+                    }
+                }
+                if (!_sdgOpenCentered) {
+                    if (_getSidebarRecenterTarget() === 'pin') {
+                        const tz = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                        const offsetCenter = _pinCenterForOverlay(searchAddressMarker.getLatLng(), tz);
+                        map.stop();
+                        isAutoFittingPolygon = true;
+                        map.flyTo(offsetCenter, tz, { duration: 0.5 });
+                        const ep = _clearEpoch;
+                        map.once('moveend', () => {
+                            isAutoFittingPolygon = false;
                             if (_clearEpoch !== ep) return;
-                            if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
-                                _panToAvailableCanvas(searchAddressMarker.getLatLng());
-                            }
+                            onSidebarTransitionEnd(() => {
+                                if (_clearEpoch !== ep) return;
+                                if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
+                                    _panToAvailableCanvas(searchAddressMarker.getLatLng());
+                                }
+                            });
                         });
-                    });
-                } else if (fitStateResultsOpen) {
-                    applyPolygonFit(fitStateResultsOpen);
+                    } else if (fitStateResultsOpen) {
+                        applyPolygonFit(fitStateResultsOpen);
+                    }
                 }
                 // After sidebar settles, highlight the pending card.
                 // Merge highlight + cleanup into ONE callback so the cleanup's
