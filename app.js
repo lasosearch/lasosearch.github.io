@@ -30,6 +30,8 @@ let _isChangingSelection = false;  // guards popupclose from clearing .active du
 let isPinchZoom = false;          // true while the user is in continuous pinch/wheel zoom
 let _buttonZoomPending = false;   // transient flag set by +/- button handlers before setZoom
 let isFitZoom = false;
+let _isAtMyLocation = false;       // true after My Location fly completes
+let _myLocationCenter = null;      // stored center for drift detection
 let isLocationSearchZoom = false;  // true during location/search zoom animations
 let fitZoomValue = null;   // absolute fractional zoom for current polygon fit
 let drawingZoom = null;    // integer zoom at which the polygon was drawn
@@ -514,28 +516,29 @@ function initMap() {
                 container.classList.add('tooltip-dismissed');
 
                 if (target === 'pin') {
-                    // Fly to searched location pin at default zoom,
-                    // centered in the available canvas (above results overlay)
+                    // Fly to searched location pin at default zoom, then
+                    // correct for overlay (same approach as business pins)
                     const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
                     const pinLL = searchAddressMarker.getLatLng();
-                    const offsetY = _getPinCenterOffsetY();
-                    let flyCenter = pinLL;
-                    if (offsetY > 0) {
-                        const pinPx = map.project(pinLL, targetZoom);
-                        flyCenter = map.unproject(L.point(pinPx.x, pinPx.y + offsetY), targetZoom);
-                    }
                     isLocationSearchZoom = true;
-                    map.flyTo(flyCenter, targetZoom, { duration: 0.5 });
+                    map.flyTo(pinLL, targetZoom, { duration: 0.5 });
                     const epoch = _clearEpoch;
-                    map.once('moveend', () => {
-                        isLocationSearchZoom = false;
+                    const finalize = () => {
                         isFitZoom = true;
-                        activeFitState = { center: flyCenter, zoom: targetZoom };
+                        activeFitState = { center: map.getCenter(), zoom: map.getZoom() };
                         currentZoomLevel = map.getZoom() - initialZoom;
                         updateZoomLevelIndicator();
                         updateDrawButtonState();
                         if (_clearEpoch !== epoch) return;
                         if (map.hasLayer(searchAddressMarker)) searchAddressMarker.openPopup();
+                    };
+                    map.once('moveend', () => {
+                        isLocationSearchZoom = false;
+                        if (_panToAvailableCanvas(pinLL)) {
+                            map.once('moveend', finalize);
+                        } else {
+                            finalize();
+                        }
                     });
                 } else {
                     // Polygon fit (existing logic)
@@ -590,6 +593,7 @@ function initMap() {
             L.DomEvent.on(btn, 'click', (e) => {
                 L.DomEvent.preventDefault(e);
                 if (container.classList.contains('locating')) return;
+                if (_isAtMyLocation) return;  // already centered on location
                 if (!navigator.geolocation) {
                     updateStatus('Geolocation not supported');
                     return;
@@ -603,12 +607,23 @@ function initMap() {
                         window._userLatLng = loc;
                         directionLocations.A = { lat: loc[0], lng: loc[1], label: 'Your location' };
                         isLocationSearchZoom = true;
-                        map.flyTo(loc, 14 + (isMobileView() ? 2 : 3), { duration: 0.8 });
-                        map.once('moveend', () => {
-                            isLocationSearchZoom = false;
+                        const targetZoom = 14 + (isMobileView() ? 2 : 3);
+                        map.flyTo(loc, targetZoom, { duration: 0.8 });
+                        const finalize = () => {
+                            _isAtMyLocation = true;
+                            _myLocationCenter = map.getCenter();
+                            updateMyLocationButtonState();
                             updateZoomLevelIndicator();
                             updateDrawButtonState();
                             updateStatus('Location found');
+                        };
+                        map.once('moveend', () => {
+                            isLocationSearchZoom = false;
+                            if (_panToAvailableCanvas(loc)) {
+                                map.once('moveend', finalize);
+                            } else {
+                                finalize();
+                            }
                         });
                     },
                     () => {
@@ -667,6 +682,7 @@ function initMap() {
             isPinchZoom = true;
             isFitZoom = false;             // no longer at fit — enable fit button immediately
             activeFitState = null;         // user zoomed away from fit
+            if (_isAtMyLocation) { _isAtMyLocation = false; _myLocationCenter = null; updateMyLocationButtonState(); }
             updateZoomLevelIndicator();   // hide indicator immediately on pinch start
         }
         // Only close popup during auto-fit — let user zooms keep the popup in place
@@ -689,12 +705,18 @@ function initMap() {
         updateDrawButtonState();
     });
 
-    // Detect user dragging away from fit center — reactivate fit button immediately
+    // Detect user dragging away from fit center — reactivate buttons immediately
     map.on('dragstart', () => {
-        if (!isFitZoom) return;
-        isFitZoom = false;
-        activeFitState = null;
-        updateZoomFitButtonState();
+        if (isFitZoom) {
+            isFitZoom = false;
+            activeFitState = null;
+            updateZoomFitButtonState();
+        }
+        if (_isAtMyLocation) {
+            _isAtMyLocation = false;
+            _myLocationCenter = null;
+            updateMyLocationButtonState();
+        }
     });
 
     // Fallback drift detection for programmatic moves (e.g. panTo)
@@ -1003,6 +1025,13 @@ function updateZoomFitButtonState() {
         }
         tooltip.setAttribute('aria-hidden', showTooltip ? 'false' : 'true');
     }
+}
+
+function updateMyLocationButtonState() {
+    const btn = document.querySelector('.leaflet-control-my-location-btn');
+    if (!btn) return;
+    btn.classList.toggle('disabled', _isAtMyLocation);
+    btn.title = _isAtMyLocation ? 'Already at your location' : 'My location';
 }
 
 // =============================================================================
@@ -3113,31 +3142,38 @@ function clearHighlightedMarker() {
 }
 
 /**
- * Compute the vertical pixel offset needed to center a point in the
- * available canvas area (above the results overlay) rather than the
- * full map canvas.  Returns 0 on desktop or when no overlay is visible.
+ * After a flyTo places a point at the full-canvas center, pan so it
+ * sits at the center of the *available* canvas (above the results
+ * overlay).  Uses getBoundingClientRect() for all overlay states —
+ * no magic numbers.  Same approach as panToMarkerInView for business pins.
+ * @param {L.LatLng|number[]} latLng — the point that should be centered
+ * @returns {boolean} true if a panBy was initiated (caller should wait
+ *   for the next moveend), false if no correction was needed.
  */
-function _getPinCenterOffsetY() {
-    if (!isMobileView()) return 0;
+function _panToAvailableCanvas(latLng) {
+    if (!isMobileView()) return false;
     const mapEl = document.getElementById('map');
-    if (!mapEl) return 0;
-    const mapH = mapEl.offsetHeight;
+    const sidebar = document.getElementById('results-sidebar');
+    if (!mapEl || !sidebar) return false;
 
-    if (document.body.classList.contains('results-open') ||
-        document.body.classList.contains('results-expanded')) {
-        const sidebar = document.getElementById('results-sidebar');
-        if (sidebar) {
-            const sidebarRect = sidebar.getBoundingClientRect();
-            const mapRect = mapEl.getBoundingClientRect();
-            const availableH = sidebarRect.top - mapRect.top;
-            if (availableH > 50) {
-                return (mapH / 2) - (availableH / 2);
-            }
-        }
-    } else if (document.body.classList.contains('results-peeked')) {
-        return TOASTER_LIP_HEIGHT / 2;
-    }
-    return 0;
+    const hasOverlay = sidebar.classList.contains('open') ||
+                       document.body.classList.contains('results-peeked');
+    if (!hasOverlay) return false;
+
+    const sidebarRect = sidebar.getBoundingClientRect();
+    const mapRect   = mapEl.getBoundingClientRect();
+    const availableH = sidebarRect.top - mapRect.top;
+    if (availableH <= 50 || availableH >= mapEl.offsetHeight - 10) return false;
+
+    const pt = map.latLngToContainerPoint(
+        latLng instanceof L.LatLng ? latLng : L.latLng(latLng[0], latLng[1])
+    );
+    const dx = pt.x - mapEl.offsetWidth / 2;
+    const dy = pt.y - availableH / 2;
+    if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return false;
+
+    map.panBy([dx, dy], { animate: true, duration: 0.25 });
+    return true;
 }
 
 function panToMarkerInView(marker) {
@@ -3560,22 +3596,23 @@ async function searchAddress() {
     if (normAddr === _lastSearchedAddress && searchAddressMarker && map.hasLayer(searchAddressMarker)) {
         const pinLatLng = searchAddressMarker.getLatLng();
         const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
-        const offsetY = _getPinCenterOffsetY();
-        let flyCenter = pinLatLng;
-        if (offsetY > 0) {
-            const pinPx = map.project(pinLatLng, targetZoom);
-            flyCenter = map.unproject(L.point(pinPx.x, pinPx.y + offsetY), targetZoom);
-        }
         isLocationSearchZoom = true;
-        map.flyTo(flyCenter, targetZoom, { duration: 1.0 });
+        map.flyTo(pinLatLng, targetZoom, { duration: 1.0 });
         const epoch = _clearEpoch;
+        const openPopup = () => {
+            if (_clearEpoch !== epoch) return;
+            if (map.hasLayer(searchAddressMarker)) searchAddressMarker.openPopup();
+        };
         map.once('moveend', () => {
             isLocationSearchZoom = false;
             currentZoomLevel = map.getZoom() - initialZoom;
             updateZoomLevelIndicator();
             updateDrawButtonState();
-            if (_clearEpoch !== epoch) return;
-            if (map.hasLayer(searchAddressMarker)) searchAddressMarker.openPopup();
+            if (_panToAvailableCanvas(pinLatLng)) {
+                map.once('moveend', openPopup);
+            } else {
+                openPopup();
+            }
         });
         updateStatus('Re-centering on location');
         return;
@@ -3831,26 +3868,28 @@ function displayGeocodeResult(result, searchQuery) {
     searchAddressMarker = marker;
     updateZoomFitButtonState();
 
-    // Fly to address at target display level (PC: 3, mobile: 2),
-    // centered in the available canvas (above results overlay if visible)
+    // Fly to address at target display level (PC: 3, mobile: 2), then
+    // correct for overlay (same approach as business pin centering)
     const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
-    const offsetY = _getPinCenterOffsetY();
-    let flyCenter = [lat, lon];
-    if (offsetY > 0) {
-        const pinPx = map.project(L.latLng(lat, lon), targetZoom);
-        flyCenter = map.unproject(L.point(pinPx.x, pinPx.y + offsetY), targetZoom);
-    }
+    const pinLatLng = L.latLng(lat, lon);
     isLocationSearchZoom = true;
-    map.flyTo(flyCenter, targetZoom, { duration: 1.0 });
+    map.flyTo(pinLatLng, targetZoom, { duration: 1.0 });
     const epochAtSearch = _clearEpoch;
+    const openPopup = () => {
+        if (_clearEpoch !== epochAtSearch) return;
+        if (!map.hasLayer(marker)) return;
+        marker.openPopup();
+    };
     map.once('moveend', () => {
         isLocationSearchZoom = false;
         currentZoomLevel = map.getZoom() - initialZoom;
         updateZoomLevelIndicator();
         updateDrawButtonState();
-        if (_clearEpoch !== epochAtSearch) return;   // clearAll fired during fly
-        if (!map.hasLayer(marker)) return;
-        marker.openPopup();
+        if (_panToAvailableCanvas(pinLatLng)) {
+            map.once('moveend', openPopup);
+        } else {
+            openPopup();
+        }
     });
 
     updateStatus(`Found: ${result.name || result.display_name.split(',')[0]}`);

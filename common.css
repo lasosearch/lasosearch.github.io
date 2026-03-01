@@ -238,6 +238,12 @@ body {
     background-color: #f4f4f4 !important;
 }
 
+.leaflet-control-my-location-btn.disabled {
+    opacity: 0.4;
+    cursor: default;
+    pointer-events: none;
+}
+
 .leaflet-control-my-location.locating .leaflet-control-my-location-btn {
     color: var(--primary-color) !important;
     animation: locating-pulse 1s ease-in-out infinite;
