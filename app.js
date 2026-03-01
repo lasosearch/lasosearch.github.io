@@ -806,61 +806,76 @@ function updateDrawButtonState() {
     const tooltip = document.getElementById('draw-btn-tooltip');
     if (!drawBtn) return;
 
+    const icon  = drawBtn.querySelector('i');
+    const label = drawBtn.querySelector('span');
     const minZoomToDraw = getMinZoomLevelToDraw();
     const zoomTooLow = currentZoomLevel < minZoomToDraw;
     const hasPolygon = !!currentPolygon;
-    const disabled = zoomTooLow || hasPolygon;
 
-    drawBtn.disabled = disabled;
-    drawBtn.classList.toggle('is-disabled', disabled);
+    if (hasPolygon) {
+        // ── "Draw Clear" mode — always enabled so the user can clear the shape
+        drawBtn.disabled = false;
+        drawBtn.classList.remove('is-disabled');
+        if (icon)  icon.className = 'fas fa-eraser';
+        if (label && !isDrawingMode) label.textContent = 'Draw Clear';
 
-    if (wrapper) {
-        wrapper.classList.toggle('tooltip-enabled', disabled);
-        if (!disabled) {
+        if (wrapper) {
+            wrapper.classList.remove('tooltip-enabled');
             wrapper.classList.remove('tooltip-visible');
             wrapper.classList.remove('tooltip-dismissed');
         }
-    }
-
-    if (tooltip) {
-        if (disabled) {
-            let line1 = '', line2 = '';
-            if (zoomTooLow) {
-                const needed = Math.ceil(Math.max(0, minZoomToDraw - currentZoomLevel));
-                line1 = `Zoom in ${needed} more level${needed === 1 ? '' : 's'} to draw`;
-                line2 = hasPolygon
-                    ? 'Delete the existing shape to start over'
-                    : 'Use + or pinch to zoom into the map';
-            } else if (hasPolygon) {
-                line1 = 'A shape is already on the map';
-                line2 = 'Tap Clear All to remove it first';
-            }
-            tooltip.innerHTML =
-                '<div class="draw-tooltip-text">' +
-                    '<span>' + line1 + '</span>' +
-                    '<span>' + line2 + '</span>' +
-                '</div>' +
-                '<button class="draw-tooltip-close" aria-label="Close">\u00d7</button>';
-
-            // Attach listeners directly to the button element — inline onclick
-            // and delegated handlers are unreliable on mobile Safari.
-            const closeBtn = tooltip.querySelector('.draw-tooltip-close');
-            if (closeBtn) {
-                const dismiss = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (wrapper) {
-                        wrapper.classList.remove('tooltip-visible');
-                        wrapper.classList.add('tooltip-dismissed');
-                    }
-                };
-                closeBtn.addEventListener('click', dismiss);
-                closeBtn.addEventListener('touchend', dismiss);
-            }
-        } else {
+        if (tooltip) {
             tooltip.innerHTML = '';
+            tooltip.setAttribute('aria-hidden', 'true');
         }
-        tooltip.setAttribute('aria-hidden', disabled ? 'false' : 'true');
+    } else {
+        // ── Normal "Draw" mode — disabled only when zoom is too low
+        const disabled = zoomTooLow;
+        drawBtn.disabled = disabled;
+        drawBtn.classList.toggle('is-disabled', disabled);
+        if (icon)  icon.className = 'fas fa-pencil-alt';
+        if (label && !isDrawingMode) label.textContent = 'Draw';
+
+        if (wrapper) {
+            wrapper.classList.toggle('tooltip-enabled', disabled);
+            if (!disabled) {
+                wrapper.classList.remove('tooltip-visible');
+                wrapper.classList.remove('tooltip-dismissed');
+            }
+        }
+
+        if (tooltip) {
+            if (disabled) {
+                const needed = Math.ceil(Math.max(0, minZoomToDraw - currentZoomLevel));
+                const line1 = `Zoom in ${needed} more level${needed === 1 ? '' : 's'} to draw`;
+                const line2 = 'Use + or pinch to zoom into the map';
+                tooltip.innerHTML =
+                    '<div class="draw-tooltip-text">' +
+                        '<span>' + line1 + '</span>' +
+                        '<span>' + line2 + '</span>' +
+                    '</div>' +
+                    '<button class="draw-tooltip-close" aria-label="Close">\u00d7</button>';
+
+                // Attach listeners directly to the button element — inline onclick
+                // and delegated handlers are unreliable on mobile Safari.
+                const closeBtn = tooltip.querySelector('.draw-tooltip-close');
+                if (closeBtn) {
+                    const dismiss = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (wrapper) {
+                            wrapper.classList.remove('tooltip-visible');
+                            wrapper.classList.add('tooltip-dismissed');
+                        }
+                    };
+                    closeBtn.addEventListener('click', dismiss);
+                    closeBtn.addEventListener('touchend', dismiss);
+                }
+            } else {
+                tooltip.innerHTML = '';
+            }
+            tooltip.setAttribute('aria-hidden', disabled ? 'false' : 'true');
+        }
     }
 }
 
@@ -1028,6 +1043,13 @@ function toggleDrawingMode() {
     const drawBtn = document.getElementById('drawing-toggle');
     const wrapper = document.getElementById('draw-btn-wrapper');
 
+    // "Draw Clear" mode — clear shape + business pins, keep location pin
+    if (currentPolygon) {
+        drawClear();
+        if (drawBtn && typeof drawBtn.blur === 'function') drawBtn.blur();
+        return;
+    }
+
     // If the button is disabled, briefly flash the tooltip so the user
     // sees why (works on mobile where hover doesn't apply).
     if (drawBtn && drawBtn.disabled) {
@@ -1051,6 +1073,98 @@ function toggleDrawingMode() {
     // Explicitly blur to force the normal (inactive) styling to re-apply immediately.
     if (drawBtn && typeof drawBtn.blur === 'function') {
         drawBtn.blur();
+    }
+}
+
+/**
+ * Clear the draw shape and all business pins, but preserve the location
+ * search pin (searchAddressMarker) and the address input text.
+ */
+function drawClear() {
+    _clearEpoch++;
+
+    selectedPlaceIndex = null;
+    _highlightedMarkerIndex = null;
+    isAutoFittingPolygon = false;
+
+    // Remove business markers (NOT searchAddressMarker)
+    markers.forEach(marker => {
+        if (map.hasLayer(marker)) map.removeLayer(marker);
+    });
+    markers = [];
+
+    _isChangingSelection = true;
+    map.closePopup();
+    _isChangingSelection = false;
+    map.stop();
+
+    // Remove polygon
+    removeCurrentPolygon();
+
+    // Stray-layer sweep — preserve searchAddressMarker and the tile layer
+    const strayLayers = [];
+    map.eachLayer(layer => {
+        if (layer === searchAddressMarker) return;
+        if (layer instanceof L.Marker || layer instanceof L.Popup) {
+            strayLayers.push(layer);
+        }
+    });
+    strayLayers.forEach(layer => map.removeLayer(layer));
+
+    // Clear drawing points
+    drawingPoints = [];
+
+    // Clear results
+    searchResults = [];
+    unfilteredSearchResults = [];
+    allSearchResults = [];
+    currentDisplayOffset = 0;
+    const resultsList = document.getElementById('results-list');
+    resultsList.innerHTML = getDefaultEmptyStateHTML();
+    document.getElementById('result-count').textContent = '0';
+
+    const placeFilterInput = document.getElementById('place-filter');
+    if (placeFilterInput) placeFilterInput.value = '';
+    activePlaceFilters = [];
+    activeSortMode = 'distance';
+    lastPriorityCenter = null;
+    syncFilterSortUIState();
+    isFitZoom = false;
+    fitZoomValue = null;
+    drawingZoom = null;
+    fitStateResultsOpen = null;
+    fitStateLipPeeked = null;
+    activeFitState = null;
+
+    const lasoBtnClear = document.getElementById('lasosearch-btn');
+    if (lasoBtnClear) lasoBtnClear.classList.remove('shimmer');
+
+    // Snap zoom to nearest integer
+    const currentZ = map.getZoom();
+    if (!Number.isInteger(currentZ)) {
+        _buttonZoomPending = true;
+        map.setZoom(Math.round(currentZ), { animate: true });
+    } else {
+        isPinchZoom = false;
+        updateZoomLevelIndicator();
+    }
+
+    // Clear scroll-container constraint
+    const content = document.querySelector('.sidebar-content');
+    if (content) content.style.maxHeight = '';
+
+    // Hide sidebar
+    document.body.classList.remove('results-peeked');
+    document.body.classList.remove('results-expanded');
+    const sidebar = document.getElementById('results-sidebar');
+    sidebar.classList.remove('open');
+    document.body.classList.remove('results-open');
+
+    updateStatus('Ready');
+
+    // Re-open the location pin popup if still on the map
+    if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
+        searchAddressMarker.openPopup();
     }
 }
 
@@ -1111,10 +1225,10 @@ function disableDrawingMode() {
 
     // Update UI
     drawBtn.classList.remove('active');
-    drawBtn.querySelector('span').textContent = 'Draw';
     overlay.classList.add('hidden');
     statusIndicator.classList.remove('drawing');
     updateStatus('Ready');
+    updateDrawButtonState();
 
     // Ensure the button immediately returns to its inactive visual state on mobile browsers.
     requestAnimationFrame(() => {
@@ -1398,7 +1512,7 @@ function closeFreehandPolygon() {
     const statusIndicator = document.getElementById('status-indicator');
 
     drawBtn.classList.remove('active');
-    drawBtn.querySelector('span').textContent = 'Draw';
+    // Text/icon set by updateDrawButtonState() above — polygon exists → "Draw Clear"
     overlay.classList.add('hidden');
     statusIndicator.classList.remove('drawing');
     map.getContainer().style.cursor = '';
@@ -3244,22 +3358,27 @@ async function searchAddress() {
     }
     lastSearchTime = Date.now();
 
+    showLoading(true, 'Searching for location...');
     updateStatus('Searching for address...', true);
 
-    // Try Nominatim first
-    let result = await tryNominatim(address);
+    try {
+        // Try Nominatim first
+        let result = await tryNominatim(address);
 
-    // If Nominatim fails, try Photon
-    if (!result) {
-        updateStatus('Trying alternative geocoder...');
-        result = await tryPhoton(address);
-    }
+        // If Nominatim fails, try Photon
+        if (!result) {
+            updateStatus('Trying alternative geocoder...');
+            result = await tryPhoton(address);
+        }
 
-    if (result) {
-        displayGeocodeResult(result, address);
-    } else {
-        updateStatus('Address search failed');
-        alert('Could not find that address. The geocoding services may be busy. Try again in a few seconds, or be more specific (e.g., "123 Main St, New York, NY").');
+        if (result) {
+            displayGeocodeResult(result, address);
+        } else {
+            updateStatus('Address search failed');
+            alert('Could not find that address. The geocoding services may be busy. Try again in a few seconds, or be more specific (e.g., "123 Main St, New York, NY").');
+        }
+    } finally {
+        showLoading(false);
     }
 }
 
@@ -4331,9 +4450,11 @@ function setupSheetDragGesture() {
     }, { passive: true });
 }
 
-function showLoading(show) {
+function showLoading(show, message) {
     const overlay = document.getElementById('loading-overlay');
+    const textEl = document.getElementById('loading-text');
     if (show) {
+        if (textEl) textEl.textContent = message || 'Searching for locations...';
         overlay.classList.remove('hidden');
     } else {
         overlay.classList.add('hidden');
