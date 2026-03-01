@@ -515,6 +515,13 @@ function initMap() {
                 // Pre-dismiss tooltip so mobile sticky :hover doesn't flash it
                 container.classList.add('tooltip-dismissed');
 
+                // Flying away from GPS location — re-enable My Location button
+                if (_isAtMyLocation) {
+                    _isAtMyLocation = false;
+                    _myLocationCenter = null;
+                    updateMyLocationButtonState();
+                }
+
                 if (target === 'pin') {
                     // Fly to searched location pin at default zoom, then
                     // correct for overlay (same approach as business pins)
@@ -733,6 +740,71 @@ function initMap() {
             updateZoomFitButtonState();
         }
     });
+
+    // Desktop: replace Leaflet's debounced scroll-wheel zoom with a continuous
+    // rAF-driven handler so trackpad pinch feels as smooth as mobile touch zoom.
+    if (!isMobileView()) {
+        map.scrollWheelZoom.disable();
+
+        let _wDelta = 0;
+        let _wRaf = null;
+        let _wEvt = null;
+        let _wActive = false;
+        let _wEnd = null;
+        const W_SENS = 150; // wheel pixels per zoom level
+
+        map.getContainer().addEventListener('wheel', (e) => {
+            e.preventDefault();
+            _wEvt = e;
+
+            const dy = (e.deltaMode === 1) ? e.deltaY * 20
+                     : (e.deltaMode === 2) ? e.deltaY * 60
+                     : e.deltaY;
+            _wDelta += dy;
+
+            // Mark gesture start — mirror the zoomstart pinch branch
+            if (!_wActive) {
+                _wActive = true;
+                isPinchZoom = true;
+                isFitZoom = false;
+                activeFitState = null;
+                if (_isAtMyLocation) {
+                    _isAtMyLocation = false;
+                    _myLocationCenter = null;
+                    updateMyLocationButtonState();
+                }
+                updateZoomFitButtonState();
+                updateZoomLevelIndicator();
+            }
+
+            // Debounce gesture end
+            clearTimeout(_wEnd);
+            _wEnd = setTimeout(() => {
+                _wActive = false;
+                isPinchZoom = false;
+                currentZoomLevel = map.getZoom() - initialZoom;
+                updateZoomLevelIndicator();
+                updateDrawButtonState();
+            }, 150);
+
+            if (_wRaf !== null) return;
+            _wRaf = requestAnimationFrame(() => {
+                const delta = -_wDelta / W_SENS;
+                _wDelta = 0;
+                _wRaf = null;
+
+                if (Math.abs(delta) < 0.001) return;
+
+                const z = map.getZoom();
+                const newZ = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), z + delta));
+                if (Math.abs(newZ - z) < 0.001) return;
+
+                const pt = map.mouseEventToContainerPoint(_wEvt);
+                const latlng = map.containerPointToLatLng(pt);
+                map.setZoomAround(latlng, newZ, { animate: false });
+            });
+        }, { passive: false });
+    }
 
     // Force zoom control buttons to go to the next integer step (no manual decimal zoom).
     const zoomInEl = map.getContainer().querySelector('.leaflet-control-zoom-in');
@@ -1904,7 +1976,9 @@ function tokenMatchesField(token, field) {
     }
 
     // Fuzzy: allow small typos for practical autocorrect-like behavior.
-    const maxDist = t.length <= 4 ? 1 : (t.length <= 8 ? 2 : 3);
+    // Short tokens (≤4 chars) get no typo tolerance — a single edit changes
+    // the word entirely (e.g. "cafe"→"care"), producing false positives.
+    const maxDist = t.length <= 4 ? 0 : (t.length <= 8 ? 1 : 2);
     if (levenshteinDistance(ts, fs, maxDist) <= maxDist) return true;
 
     // Word-level fuzzy matching (e.g., "restaurants" vs "restaurant")
@@ -4473,6 +4547,13 @@ function openSidebar() {
                 map.once('moveend', () => {
                     isAutoFittingPolygon = false;
                     if (_clearEpoch !== epoch) return;
+                    // Center pin in available canvas once sidebar transition settles
+                    onSidebarTransitionEnd(() => {
+                        if (_clearEpoch !== epoch) return;
+                        if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
+                            _panToAvailableCanvas(searchAddressMarker.getLatLng());
+                        }
+                    });
                 });
             } else if (fitStateResultsOpen) {
                 applyPolygonFit(fitStateResultsOpen);
@@ -4596,6 +4677,12 @@ function toggleMobileSheet() {
             map.once('moveend', () => {
                 isAutoFittingPolygon = false;
                 if (_clearEpoch !== epoch) return;
+                onSidebarTransitionEnd(() => {
+                    if (_clearEpoch !== epoch) return;
+                    if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
+                        _panToAvailableCanvas(searchAddressMarker.getLatLng());
+                    }
+                });
             });
         } else if (fitStateResultsOpen) {
             applyPolygonFit(fitStateResultsOpen);
@@ -4835,7 +4922,16 @@ function setupSheetDragGesture() {
                     isAutoFittingPolygon = true;
                     map.flyTo(searchAddressMarker.getLatLng(), tz, { duration: 0.5 });
                     const ep = _clearEpoch;
-                    map.once('moveend', () => { isAutoFittingPolygon = false; if (_clearEpoch !== ep) return; });
+                    map.once('moveend', () => {
+                        isAutoFittingPolygon = false;
+                        if (_clearEpoch !== ep) return;
+                        onSidebarTransitionEnd(() => {
+                            if (_clearEpoch !== ep) return;
+                            if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
+                                _panToAvailableCanvas(searchAddressMarker.getLatLng());
+                            }
+                        });
+                    });
                 } else if (fitStateResultsOpen) {
                     applyPolygonFit(fitStateResultsOpen);
                 }
