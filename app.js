@@ -492,11 +492,28 @@ function initMap() {
                     return;
                 }
                 if (isFitZoom) {
-                    // Already at fit (polygon or pin) — flash tooltip
-                    container.classList.remove('tooltip-dismissed');
-                    container.classList.add('tooltip-visible');
-                    setTimeout(() => container.classList.remove('tooltip-visible'), 2500);
-                    return;
+                    // Live-validate: is the map actually still at the fit position?
+                    // The flag can go stale when sidebar recenters suppress drift
+                    // detection via isAutoFittingPolygon.
+                    let actuallyAtFit = false;
+                    if (activeFitState) {
+                        const fitPx = map.latLngToContainerPoint(activeFitState.center);
+                        const sz = map.getSize();
+                        const drift = Math.hypot(fitPx.x - sz.x / 2, fitPx.y - sz.y / 2);
+                        const zoomDrift = Math.abs(map.getZoom() - activeFitState.zoom);
+                        actuallyAtFit = drift <= 20 && zoomDrift <= 0.5;
+                    }
+                    if (actuallyAtFit) {
+                        // Truly at fit — flash tooltip
+                        container.classList.remove('tooltip-dismissed');
+                        container.classList.add('tooltip-visible');
+                        setTimeout(() => container.classList.remove('tooltip-visible'), 2500);
+                        return;
+                    }
+                    // Stale flag — clear it and fall through to perform the fit
+                    isFitZoom = false;
+                    activeFitState = null;
+                    updateZoomFitButtonState();
                 }
 
                 // Decide target: whichever is closer to the current map center
