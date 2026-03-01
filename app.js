@@ -3890,6 +3890,56 @@ function _geoCacheKey(address) {
 }
 
 /**
+ * Return the user's actual location for geocoder proximity bias.
+ * Priority: live GPS → saved GPS → map center (last resort).
+ * This ensures searches like "Trader Joes" find the one near the
+ * user's real position, not wherever the map last flew to.
+ */
+function _getUserLocation() {
+    // Live GPS fix from watchPosition / getCurrentPosition
+    if (window._userLatLng) {
+        return { lat: window._userLatLng[0], lng: window._userLatLng[1] };
+    }
+    // Saved GPS from previous session
+    const saved = getSavedLocation();
+    if (saved) {
+        return { lat: saved[0], lng: saved[1] };
+    }
+    // Last resort: wherever the map is pointing
+    return map.getCenter();
+}
+
+/**
+ * Heuristic: does the query look like a street address (vs a place name)?
+ *
+ * Addresses are cached because "123 Main St, New York" always resolves
+ * to the same place.  Place names like "Trader Joes" or "Starbucks"
+ * are NOT cached because they resolve differently based on proximity.
+ *
+ * Signals that indicate an address:
+ *   • Starts with a digit  → "123 Main St", "42 Broadway"
+ *   • Contains a street-type word → St, Ave, Blvd, Dr, Rd, Ln, Way, …
+ *   • Contains a 5-digit ZIP code → "10001"
+ *   • Contains a US state abbreviation after a comma → ", NY"
+ */
+const _STREET_TYPES = /\b(st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|way|ct|court|pl|place|pkwy|parkway|hwy|highway|cir|circle|ter|terrace|trl|trail|loop|run)\b/i;
+const _ZIP_CODE = /\b\d{5}(-\d{4})?\b/;
+const _STATE_ABBR = /,\s*[A-Z]{2}\b/;
+
+function _looksLikeAddress(query) {
+    const q = query.trim();
+    // Starts with a house number (digit followed by space + word)
+    if (/^\d+\s+\w/.test(q)) return true;
+    // Contains a street-type suffix
+    if (_STREET_TYPES.test(q)) return true;
+    // Contains a ZIP code
+    if (_ZIP_CODE.test(q)) return true;
+    // Contains ", NY" style state abbreviation
+    if (_STATE_ABBR.test(q)) return true;
+    return false;
+}
+
+/**
  * Strip apostrophes / curly quotes and lowercase for name comparison.
  * Allows "trader joes" to match "Trader Joe's" etc.
  */
@@ -3937,15 +3987,19 @@ async function searchAddress() {
         return;
     }
 
-    // Check localStorage cache
+    // Only cache addresses (e.g. "123 Main St"), never place names
+    // (e.g. "Trader Joes") which resolve differently based on proximity.
+    const isAddress = _looksLikeAddress(address);
     const cache = _loadGeoCache();
-    const cached = cache[normAddr];
-    if (cached) {
-        const cn = cached.name || (cached.namedetails && cached.namedetails.name) || cached.display_name || '';
-        console.log(`[searchAddress] CACHE HIT for "${address}" → "${cn}" [${cached.lat}, ${cached.lon}]`);
-        _lastSearchedAddress = normAddr;
-        displayGeocodeResult(cached, address);
-        return;
+    if (isAddress) {
+        const cached = cache[normAddr];
+        if (cached) {
+            const cn = cached.name || (cached.namedetails && cached.namedetails.name) || cached.display_name || '';
+            console.log(`[searchAddress] CACHE HIT for "${address}" → "${cn}" [${cached.lat}, ${cached.lon}]`);
+            _lastSearchedAddress = normAddr;
+            displayGeocodeResult(cached, address);
+            return;
+        }
     }
 
     // Enforce rate limiting
@@ -3961,7 +4015,9 @@ async function searchAddress() {
     showLoading(true, 'Searching for location...');
     updateStatus('Searching for address...', true);
 
-    const center = map.getCenter();
+    // Use the user's actual GPS location for proximity ranking, not the
+    // map center (which may have moved to a previous search result).
+    const center = _getUserLocation();
 
     try {
         // Phase 1: Fire both geocoders in parallel with strong proximity bias.
@@ -3997,10 +4053,14 @@ async function searchAddress() {
                 : _pickClosestGeoResult(candidates, center,
                     r => [parseFloat(r.lat), parseFloat(r.lon)], address);
 
-            // Cache in localStorage
-            result._ts = Date.now();
-            cache[normAddr] = result;
-            _saveGeoCache(cache);
+            // Only cache addresses in localStorage — place names resolve
+            // differently depending on the user's location, so caching
+            // "Trader Joes" would always return the same stale result.
+            if (isAddress) {
+                result._ts = Date.now();
+                cache[normAddr] = result;
+                _saveGeoCache(cache);
+            }
             _lastSearchedAddress = normAddr;
 
             displayGeocodeResult(result, address);
@@ -4091,7 +4151,7 @@ function _pickClosestGeoResult(results, center, getLatLon, query) {
 }
 
 async function tryNominatim(address, bounded = true) {
-    const center = map.getCenter();
+    const center = _getUserLocation();
     // bounded=true  → ±2° ≈ 220 km hard fence (forces nearby results)
     // bounded=false → ±0.5° soft hint, global fallback
     const bias = bounded ? 2.0 : 0.5;
@@ -4144,8 +4204,9 @@ async function tryPhoton(address) {
         lang: 'en'
     });
 
-    // Add proximity bias so business-name searches prefer nearby results.
-    const center = map.getCenter();
+    // Add proximity bias using the user's actual GPS location (not the map
+    // center, which may have moved to a previous search result).
+    const center = _getUserLocation();
     params.set('lat', center.lat.toFixed(6));
     params.set('lon', center.lng.toFixed(6));
 
