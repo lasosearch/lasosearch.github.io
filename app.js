@@ -2796,25 +2796,48 @@ function setMarkerHighlighted(marker, highlighted) {
         : 'Business';
     const iconClass = getPlaceIcon(mainType);
 
+    // Shared easing: ease-in → constant speed → ease-out
+    const pinBezier = 'cubic-bezier(0.65, 0, 0.35, 1)';
+
     if (highlighted) {
         // 28 × 1.66 ≈ 46, icon font 13 × 1.66 ≈ 22
         marker.setIcon(L.divIcon({
             className: 'custom-marker',
-            html: `<div style="width:46px;height:46px;border-radius:50%;background:#34a853;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);transition:all 0.25s ease;"><i class="fas ${iconClass}" style="color:#fff;font-size:22px;"></i></div>`,
+            html: `<div style="width:46px;height:46px;border-radius:50%;background:#34a853;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);animation:marker-highlight-in 0.3s ${pinBezier} both;"><i class="fas ${iconClass}" style="color:#fff;font-size:22px;"></i></div>`,
             iconSize: [46, 46],
             iconAnchor: [23, 23]
         }));
         marker.setZIndexOffset(10000);
         _highlightedMarkerIndex = index;
     } else {
-        marker.setIcon(L.divIcon({
-            className: 'custom-marker',
-            html: `<div style="width:28px;height:28px;border-radius:50%;background:#4285f4;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.35);"><i class="fas ${iconClass}" style="color:#fff;font-size:13px;"></i></div>`,
-            iconSize: [28, 28],
-            iconAnchor: [14, 14]
-        }));
-        marker.setZIndexOffset(0);
         if (_highlightedMarkerIndex === index) _highlightedMarkerIndex = null;
+
+        // Animate the green pin shrinking before swapping to blue
+        const iconEl = marker._icon;
+        const pinDiv = iconEl && iconEl.querySelector('div');
+        if (pinDiv) {
+            const epoch = _clearEpoch;
+            pinDiv.style.animation = `marker-highlight-out 0.3s ${pinBezier} forwards`;
+            pinDiv.addEventListener('animationend', () => {
+                if (_clearEpoch !== epoch) return; // stale — clearAll was called
+                marker.setIcon(L.divIcon({
+                    className: 'custom-marker',
+                    html: `<div style="width:28px;height:28px;border-radius:50%;background:#4285f4;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.35);"><i class="fas ${iconClass}" style="color:#fff;font-size:13px;"></i></div>`,
+                    iconSize: [28, 28],
+                    iconAnchor: [14, 14]
+                }));
+                marker.setZIndexOffset(0);
+            }, { once: true });
+        } else {
+            // Fallback: instant swap if DOM element not available
+            marker.setIcon(L.divIcon({
+                className: 'custom-marker',
+                html: `<div style="width:28px;height:28px;border-radius:50%;background:#4285f4;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.35);"><i class="fas ${iconClass}" style="color:#fff;font-size:13px;"></i></div>`,
+                iconSize: [28, 28],
+                iconAnchor: [14, 14]
+            }));
+            marker.setZIndexOffset(0);
+        }
     }
 }
 

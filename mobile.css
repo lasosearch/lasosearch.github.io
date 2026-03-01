@@ -133,6 +133,17 @@ body.is-mobile .btn-outline:active {
     background: var(--bg-secondary);
 }
 
+body.is-mobile .search-btn:hover,
+body.is-mobile .search-btn:active {
+    background: var(--primary-color);
+}
+
+body.is-mobile .settings-btn:hover,
+body.is-mobile .settings-btn:active {
+    background: var(--bg-secondary);
+    color: #9aa0a6;
+}
+
 /* Kill blue border on sort dropdown focus */
 body.is-mobile .sort-select:focus {
     border-color: var(--border-color);
@@ -183,15 +194,22 @@ body.is-mobile .search-box input {
     font-size: 16px;
 }
 
-/* Pull search button out of search-box on mobile */
+/* Pull search button out of search-box on mobile.
+   Structural properties (width, height, flex, border-radius, transition)
+   mirror .header > .settings-btn exactly — only colors differ. */
 body.is-mobile .search-box .search-btn {
     position: absolute;
     right: -52px;
     top: 50%;
-    transform: translateY(calc(-50% - 2px)); /* compensate for the 4px drop shadow so the visual center aligns with the textbox */
+    transform: translateY(calc(-50% - 2px));
     width: var(--row-h);
-    height: calc(var(--row-h) - 4px); /* subtract 4px shadow offset so the visual height matches the row */
+    height: calc(var(--row-h) - 4px);
+    flex: 0 0 auto;
     border-radius: var(--radius-sm);
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 body.is-mobile .search-box .search-btn.pressed {
