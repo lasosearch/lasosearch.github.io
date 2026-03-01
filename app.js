@@ -523,12 +523,13 @@ function initMap() {
                 }
 
                 if (target === 'pin') {
-                    // Fly to searched location pin at default zoom, then
-                    // correct for overlay (same approach as business pins)
+                    // Fly to searched location pin at default zoom, offset
+                    // for overlay so pin lands in the available canvas area.
                     const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
                     const pinLL = searchAddressMarker.getLatLng();
+                    const flyTarget = _pinCenterForOverlay(pinLL, targetZoom);
                     isLocationSearchZoom = true;
-                    map.flyTo(pinLL, targetZoom, { duration: 0.5 });
+                    map.flyTo(flyTarget, targetZoom, { duration: 0.5 });
                     const epoch = _clearEpoch;
                     const finalize = () => {
                         isFitZoom = true;
@@ -728,16 +729,29 @@ function initMap() {
 
     // Fallback drift detection for programmatic moves (e.g. panTo)
     map.on('moveend', () => {
-        if (!isFitZoom || !activeFitState || isAutoFittingPolygon || isLocationSearchZoom) return;
-        // Compare current center to fit center in pixel space
-        const fitPx = map.latLngToContainerPoint(activeFitState.center);
-        const size = map.getSize();
-        const cx = size.x / 2, cy = size.y / 2;
-        const drift = Math.hypot(fitPx.x - cx, fitPx.y - cy);
-        if (drift > 5) {
-            isFitZoom = false;
-            activeFitState = null;
-            updateZoomFitButtonState();
+        // Drift detection for fit-zoom
+        if (isFitZoom && activeFitState && !isAutoFittingPolygon && !isLocationSearchZoom) {
+            const fitPx = map.latLngToContainerPoint(activeFitState.center);
+            const size = map.getSize();
+            const cx = size.x / 2, cy = size.y / 2;
+            const drift = Math.hypot(fitPx.x - cx, fitPx.y - cy);
+            if (drift > 5) {
+                isFitZoom = false;
+                activeFitState = null;
+                updateZoomFitButtonState();
+            }
+        }
+        // Drift detection for my-location — catches programmatic flyTo's
+        // (e.g. sidebar recenter, polygon fit) that move away from GPS
+        if (_isAtMyLocation && _myLocationCenter && !isLocationSearchZoom) {
+            const myPx = map.latLngToContainerPoint(_myLocationCenter);
+            const sz = map.getSize();
+            const driftMy = Math.hypot(myPx.x - sz.x / 2, myPx.y - sz.y / 2);
+            if (driftMy > 30) {
+                _isAtMyLocation = false;
+                _myLocationCenter = null;
+                updateMyLocationButtonState();
+            }
         }
     });
 
@@ -3401,6 +3415,46 @@ function clearHighlightedMarker() {
 }
 
 /**
+ * Compute a map center such that when flyTo'd, the given latLng appears
+ * centered in the available canvas above the overlay — NOT at the full
+ * canvas center.  Uses Leaflet projection at the target zoom so the
+ * offset is accurate regardless of current vs target zoom level.
+ *
+ * For results-open (midway): overlay = 50% of map → offset = mapH/4
+ * For results-peeked (lip):  overlay = TOASTER_LIP_HEIGHT → offset = lip/2
+ *
+ * Returns the original latLng unchanged when no overlay is active or
+ * on desktop (where there is no bottom-sheet overlay).
+ */
+function _pinCenterForOverlay(latLng, targetZoom) {
+    if (!isMobileView()) return latLng;
+    const mapEl = document.getElementById('map');
+    if (!mapEl) return latLng;
+
+    const fullH = mapEl.offsetHeight;
+    let overlayH = 0;
+
+    // Determine overlay height from the current CSS state.
+    // results-open = toaster at 50% (midway), lip/peeked only = TOASTER_LIP_HEIGHT
+    if (document.body.classList.contains('results-open')) {
+        overlayH = fullH * 0.5;
+    } else if (document.body.classList.contains('results-peeked')) {
+        overlayH = TOASTER_LIP_HEIGHT;
+    }
+
+    if (overlayH <= 0) return latLng;
+
+    // flyTo centers at fullH/2.  We want the pin at (fullH - overlayH) / 2.
+    // Shift = fullH/2 - (fullH - overlayH)/2 = overlayH / 2 pixels downward
+    // in projection space.
+    const offsetPx = overlayH / 2;
+
+    const ll = latLng instanceof L.LatLng ? latLng : L.latLng(latLng[0], latLng[1]);
+    const pinPx = map.project(ll, targetZoom);
+    return map.unproject(L.point(pinPx.x, pinPx.y + offsetPx), targetZoom);
+}
+
+/**
  * After a flyTo places a point at the full-canvas center, pan so it
  * sits at the center of the *available* canvas (above the results
  * overlay).  Uses getBoundingClientRect() for all overlay states —
@@ -3853,10 +3907,16 @@ async function searchAddress() {
     // Same string already searched and pin is on the map → just recenter
     const normAddr = _geoCacheKey(address);
     if (normAddr === _lastSearchedAddress && searchAddressMarker && map.hasLayer(searchAddressMarker)) {
+        if (_isAtMyLocation) {
+            _isAtMyLocation = false;
+            _myLocationCenter = null;
+            updateMyLocationButtonState();
+        }
         const pinLatLng = searchAddressMarker.getLatLng();
         const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
+        const flyTarget = _pinCenterForOverlay(pinLatLng, targetZoom);
         isLocationSearchZoom = true;
-        map.flyTo(pinLatLng, targetZoom, { duration: 1.0 });
+        map.flyTo(flyTarget, targetZoom, { duration: 1.0 });
         const epoch = _clearEpoch;
         const openPopup = () => {
             if (_clearEpoch !== epoch) return;
@@ -4157,6 +4217,13 @@ function displayGeocodeResult(result, searchQuery) {
         }
     }
 
+    // Flying to a searched address — no longer at GPS location
+    if (_isAtMyLocation) {
+        _isAtMyLocation = false;
+        _myLocationCenter = null;
+        updateMyLocationButtonState();
+    }
+
     // Remove previous search marker if any
     if (searchAddressMarker) {
         if (map.hasLayer(searchAddressMarker)) map.removeLayer(searchAddressMarker);
@@ -4177,12 +4244,14 @@ function displayGeocodeResult(result, searchQuery) {
     searchAddressMarker = marker;
     updateZoomFitButtonState();
 
-    // Fly to address at target display level (PC: 3, mobile: 2), then
-    // correct for overlay (same approach as business pin centering)
+    // Fly to address at target display level (PC: 3, mobile: 2).
+    // Use _pinCenterForOverlay so the pin lands centered in the available
+    // canvas above the overlay (if open), not at the full canvas center.
     const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
     const pinLatLng = L.latLng(lat, lon);
+    const flyTarget = _pinCenterForOverlay(pinLatLng, targetZoom);
     isLocationSearchZoom = true;
-    map.flyTo(pinLatLng, targetZoom, { duration: 1.0 });
+    map.flyTo(flyTarget, targetZoom, { duration: 1.0 });
     const epochAtSearch = _clearEpoch;
     const openPopup = () => {
         if (_clearEpoch !== epochAtSearch) return;
@@ -4775,14 +4844,15 @@ function openSidebar() {
             if (_getSidebarRecenterTarget() === 'pin') {
                 const targetZoom = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
                 const pinLatLng = searchAddressMarker.getLatLng();
+                const offsetCenter = _pinCenterForOverlay(pinLatLng, targetZoom);
                 map.stop();
                 isAutoFittingPolygon = true;
-                map.flyTo(pinLatLng, targetZoom, { duration: 0.5 });
+                map.flyTo(offsetCenter, targetZoom, { duration: 0.5 });
                 const epoch = _clearEpoch;
                 map.once('moveend', () => {
                     isAutoFittingPolygon = false;
                     if (_clearEpoch !== epoch) return;
-                    // Center pin in available canvas once sidebar transition settles
+                    // Safety-net correction after sidebar transition settles
                     onSidebarTransitionEnd(() => {
                         if (_clearEpoch !== epoch) return;
                         if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
@@ -4905,9 +4975,10 @@ function toggleMobileSheet() {
         if (_getSidebarRecenterTarget() === 'pin') {
             const targetZoom = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
             const pinLatLng = searchAddressMarker.getLatLng();
+            const offsetCenter = _pinCenterForOverlay(pinLatLng, targetZoom);
             map.stop();
             isAutoFittingPolygon = true;
-            map.flyTo(pinLatLng, targetZoom, { duration: 0.5 });
+            map.flyTo(offsetCenter, targetZoom, { duration: 0.5 });
             const epoch = _clearEpoch;
             map.once('moveend', () => {
                 isAutoFittingPolygon = false;
@@ -5126,9 +5197,10 @@ function setupSheetDragGesture() {
                 document.body.classList.remove('results-expanded');
                 if (_getSidebarRecenterTarget() === 'pin') {
                     const tz = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                    const offsetCenter = _pinCenterForOverlay(searchAddressMarker.getLatLng(), tz);
                     map.stop();
                     isAutoFittingPolygon = true;
-                    map.flyTo(searchAddressMarker.getLatLng(), tz, { duration: 0.5 });
+                    map.flyTo(offsetCenter, tz, { duration: 0.5 });
                     const ep = _clearEpoch;
                     map.once('moveend', () => { isAutoFittingPolygon = false; if (_clearEpoch !== ep) return; });
                 } else if (fitStateResultsOpen) {
@@ -5153,9 +5225,10 @@ function setupSheetDragGesture() {
                 if (mapEl) sidebar.style.height = mapEl.offsetHeight + 'px';
                 if (_getSidebarRecenterTarget() === 'pin') {
                     const tz = fitStateResultsOpen ? fitStateResultsOpen.zoom : map.getZoom();
+                    const offsetCenter = _pinCenterForOverlay(searchAddressMarker.getLatLng(), tz);
                     map.stop();
                     isAutoFittingPolygon = true;
-                    map.flyTo(searchAddressMarker.getLatLng(), tz, { duration: 0.5 });
+                    map.flyTo(offsetCenter, tz, { duration: 0.5 });
                     const ep = _clearEpoch;
                     map.once('moveend', () => {
                         isAutoFittingPolygon = false;
