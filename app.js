@@ -741,30 +741,49 @@ function initMap() {
         }
     });
 
-    // Desktop: replace Leaflet's debounced scroll-wheel zoom with a continuous
-    // rAF-driven handler so trackpad pinch feels as smooth as mobile touch zoom.
+    // Desktop: smooth continuous scroll-wheel / trackpad-pinch zoom (Google Maps style).
+    // Leaflet's built-in scrollWheelZoom debounces 40ms then animates each step with
+    // a ~250ms CSS transition, creating visible discrete jumps.  Instead, we disable
+    // the built-in handler and call setZoomAround({animate:false}) on every animation
+    // frame — the same technique used by the Leaflet.SmoothWheelZoom plugin.
     if (!isMobileView()) {
         map.scrollWheelZoom.disable();
 
-        let _wDelta = 0;
-        let _wRaf = null;
-        let _wEvt = null;
-        let _wActive = false;
-        let _wEnd = null;
-        const W_SENS = 150; // wheel pixels per zoom level
+        let _swzDelta = 0;            // accumulated wheel-pixel delta awaiting next rAF
+        let _swzRafId = null;         // rAF handle
+        let _swzLastPos = null;       // L.Point — last cursor container-point
+        let _swzGestureActive = false;
+        let _swzEndTimer = null;
+        const SWZ_PX_PER_LEVEL = 150; // wheel-pixels per zoom level (higher = less sensitive)
+
+        function _swzFrame() {
+            _swzRafId = null;
+            if (_swzDelta === 0) return;
+
+            const dz = -_swzDelta / SWZ_PX_PER_LEVEL;
+            _swzDelta = 0;
+
+            const z = map.getZoom();
+            const nz = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), z + dz));
+            if (nz === z) return;
+
+            map.setZoomAround(_swzLastPos, nz, { animate: false });
+        }
 
         map.getContainer().addEventListener('wheel', (e) => {
             e.preventDefault();
-            _wEvt = e;
+            if (isDrawingMode) return;  // no zoom during lasso drawing
 
             const dy = (e.deltaMode === 1) ? e.deltaY * 20
                      : (e.deltaMode === 2) ? e.deltaY * 60
                      : e.deltaY;
-            _wDelta += dy;
 
-            // Mark gesture start — mirror the zoomstart pinch branch
-            if (!_wActive) {
-                _wActive = true;
+            _swzDelta += dy;
+            _swzLastPos = map.mouseEventToContainerPoint(e);
+
+            // Mark gesture start — update state flags once
+            if (!_swzGestureActive) {
+                _swzGestureActive = true;
                 isPinchZoom = true;
                 isFitZoom = false;
                 activeFitState = null;
@@ -777,32 +796,19 @@ function initMap() {
                 updateZoomLevelIndicator();
             }
 
-            // Debounce gesture end
-            clearTimeout(_wEnd);
-            _wEnd = setTimeout(() => {
-                _wActive = false;
-                isPinchZoom = false;
+            // Batch all wheel events in this frame into one setZoomAround call
+            if (_swzRafId === null) {
+                _swzRafId = requestAnimationFrame(_swzFrame);
+            }
+
+            // Detect gesture end (no wheel events for 150ms)
+            clearTimeout(_swzEndTimer);
+            _swzEndTimer = setTimeout(() => {
+                _swzGestureActive = false;
                 currentZoomLevel = map.getZoom() - initialZoom;
                 updateZoomLevelIndicator();
                 updateDrawButtonState();
             }, 150);
-
-            if (_wRaf !== null) return;
-            _wRaf = requestAnimationFrame(() => {
-                const delta = -_wDelta / W_SENS;
-                _wDelta = 0;
-                _wRaf = null;
-
-                if (Math.abs(delta) < 0.001) return;
-
-                const z = map.getZoom();
-                const newZ = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), z + delta));
-                if (Math.abs(newZ - z) < 0.001) return;
-
-                const pt = map.mouseEventToContainerPoint(_wEvt);
-                const latlng = map.containerPointToLatLng(pt);
-                map.setZoomAround(latlng, newZ, { animate: false });
-            });
         }, { passive: false });
     }
 
