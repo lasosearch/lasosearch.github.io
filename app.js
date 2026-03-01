@@ -5425,30 +5425,61 @@ function setupSheetDragGesture() {
                 sidebar.classList.remove('open');
                 document.body.classList.remove('results-open');
                 document.body.classList.add('results-peeked');
-                // Smart recenter: pin inside polygon → pin; pin outside → closer to map center
-                if (_getSidebarRecenterTarget() === 'pin') {
-                    const targetZoom = fitStateLipPeeked ? fitStateLipPeeked.zoom : map.getZoom();
-                    const pinLatLng = searchAddressMarker.getLatLng();
-                    const offsetY = TOASTER_LIP_HEIGHT / 2;
-                    const pinPoint = map.project(pinLatLng, targetZoom);
-                    const mc = map.unproject(L.point(pinPoint.x, pinPoint.y + offsetY), targetZoom);
-                    map.stop();
-                    isAutoFittingPolygon = true;
-                    map.flyTo(mc, targetZoom, { duration: 0.5 });
-                    const epoch = _clearEpoch;
-                    map.once('moveend', () => {
-                        isAutoFittingPolygon = false;
-                        if (_clearEpoch !== epoch) return;
-                        if (map.hasLayer(searchAddressMarker)) searchAddressMarker.openPopup();
-                    });
-                } else if (fitStateLipPeeked) {
-                    applyPolygonFit(fitStateLipPeeked);
-                }
+
                 // Close popup — selected pin stays green+large as visual guide
                 if (selectedPlaceIndex !== null) {
                     _isChangingSelection = true;
                     map.closePopup();
                     _isChangingSelection = false;
+                }
+
+                // Priority: selected business pin → search location pin → polygon
+                // (mirrors closeSidebar logic)
+                let _sdgPeekedCentered = false;
+                if (fitStateLipPeeked && selectedPlaceIndex !== null && markers.length > 0) {
+                    const selM = markers.find(m => m.placeIndex === selectedPlaceIndex);
+                    if (selM && map.hasLayer(selM)) {
+                        const targetZoom = fitStateLipPeeked.zoom;
+                        const pinLatLng = selM.getLatLng();
+                        const offsetY = TOASTER_LIP_HEIGHT / 2;
+                        const pinPoint = map.project(pinLatLng, targetZoom);
+                        const mc = map.unproject(L.point(pinPoint.x, pinPoint.y + offsetY), targetZoom);
+                        map.stop();
+                        isAutoFittingPolygon = true;
+                        activeFitState = fitStateLipPeeked;
+                        map.flyTo(mc, targetZoom, { duration: 0.5 });
+                        const epoch = _clearEpoch;
+                        map.once('moveend', () => {
+                            isAutoFittingPolygon = false;
+                            if (_clearEpoch !== epoch) return;
+                            if (map.hasLayer(selM)) {
+                                _isChangingSelection = true;
+                                selM.openPopup();
+                                _isChangingSelection = false;
+                            }
+                        });
+                        _sdgPeekedCentered = true;
+                    }
+                }
+                if (!_sdgPeekedCentered) {
+                    if (_getSidebarRecenterTarget() === 'pin') {
+                        const targetZoom = fitStateLipPeeked ? fitStateLipPeeked.zoom : map.getZoom();
+                        const pinLatLng = searchAddressMarker.getLatLng();
+                        const offsetY = TOASTER_LIP_HEIGHT / 2;
+                        const pinPoint = map.project(pinLatLng, targetZoom);
+                        const mc = map.unproject(L.point(pinPoint.x, pinPoint.y + offsetY), targetZoom);
+                        map.stop();
+                        isAutoFittingPolygon = true;
+                        map.flyTo(mc, targetZoom, { duration: 0.5 });
+                        const epoch = _clearEpoch;
+                        map.once('moveend', () => {
+                            isAutoFittingPolygon = false;
+                            if (_clearEpoch !== epoch) return;
+                            if (map.hasLayer(searchAddressMarker)) searchAddressMarker.openPopup();
+                        });
+                    } else if (fitStateLipPeeked) {
+                        applyPolygonFit(fitStateLipPeeked);
+                    }
                 }
             }
         }
