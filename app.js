@@ -4478,16 +4478,14 @@ function updateStatus(text, isSearching = false) {
             subModeDesc.innerHTML =
                 stops.map(s => `<div class="sub-mode-row"><span class="sub-mode-pill" style="background:${s.bg};color:${s.fg};border-color:${s.bg};">${s.label}</span></div>`).join('') +
                 `<svg class="sub-mode-svg" xmlns="http://www.w3.org/2000/svg">
-                    <defs>
-                        <marker id="sma" viewBox="0 0 10 10" refX="9" refY="5"
-                                markerWidth="6" markerHeight="6" orient="auto-start-auto">
-                            <path class="sub-mode-arrowhead" d="M 0 0 L 10 5 L 0 10 z"/>
-                        </marker>
-                    </defs>
-                    <line class="sub-mode-connector" marker-end="url(#sma)"/>
-                    <line class="sub-mode-connector" marker-end="url(#sma)"/>
-                    <line class="sub-mode-connector" marker-end="url(#sma)"/>
-                    <line class="sub-mode-connector" marker-end="url(#sma)"/>
+                    <line class="sub-mode-connector"/>
+                    <line class="sub-mode-connector"/>
+                    <line class="sub-mode-connector"/>
+                    <line class="sub-mode-connector"/>
+                    <polygon class="sub-mode-arrowhead"/>
+                    <polygon class="sub-mode-arrowhead"/>
+                    <polygon class="sub-mode-arrowhead"/>
+                    <polygon class="sub-mode-arrowhead"/>
                 </svg>`;
             requestAnimationFrame(() => _equalizePillsAndDrawArrows());
         }
@@ -4505,10 +4503,11 @@ function updateStatus(text, isSearching = false) {
 
     function _drawSubModeArrows() {
         if (!subModeDesc) return;
-        const pills = subModeDesc.querySelectorAll('.sub-mode-pill');
-        const lines = subModeDesc.querySelectorAll('.sub-mode-connector');
-        const svg   = subModeDesc.querySelector('.sub-mode-svg');
-        if (pills.length < 3 || lines.length < 2 || !svg) return;
+        const pills  = subModeDesc.querySelectorAll('.sub-mode-pill');
+        const lines  = subModeDesc.querySelectorAll('.sub-mode-connector');
+        const arrows = subModeDesc.querySelectorAll('.sub-mode-arrowhead');
+        const svg    = subModeDesc.querySelector('.sub-mode-svg');
+        if (pills.length < 3 || lines.length < 4 || arrows.length < 4 || !svg) return;
 
         const cRect = subModeDesc.getBoundingClientRect();
         // Skip if container not visible (overlay hidden)
@@ -4519,23 +4518,45 @@ function updateStatus(text, isSearching = false) {
 
         const rects = Array.from(pills).map(p => p.getBoundingClientRect());
 
+        // Arrowhead geometry (matches previous marker: 10×10 viewBox at 6×strokeWidth render)
+        const AL = 7;    // arrowhead length (base → tip)
+        const AW = 3.5;  // arrowhead half-width
+
+        function setArrowhead(polygon, x1, y1, x2, y2) {
+            const angle = Math.atan2(y2 - y1, x2 - x1);
+            const cos = Math.cos(angle), sin = Math.sin(angle);
+            // Base center sits AL back from the tip along the line
+            const bx = x2 - AL * cos, by = y2 - AL * sin;
+            // Perpendicular offset for the two base corners
+            polygon.setAttribute('points',
+                `${x2},${y2} ${bx - AW * sin},${by + AW * cos} ${bx + AW * sin},${by - AW * cos}`);
+        }
+
         for (let i = 0; i < 2; i++) {
             const from = rects[i];
             const to   = rects[i + 1];
 
             // Arrow A: center-bottom of pill i → left edge, vertical center of pill i+1
-            const a = lines[i * 2];
-            a.setAttribute('x1', from.left + from.width / 2 - cRect.left);
-            a.setAttribute('y1', from.bottom - cRect.top + 2);
-            a.setAttribute('x2', to.left - cRect.left - 2);
-            a.setAttribute('y2', to.top + to.height / 2 - cRect.top);
+            const ax1 = from.left + from.width / 2 - cRect.left;
+            const ay1 = from.bottom - cRect.top + 2;
+            const ax2 = to.left - cRect.left - 2;
+            const ay2 = to.top + to.height / 2 - cRect.top;
+            lines[i * 2].setAttribute('x1', ax1);
+            lines[i * 2].setAttribute('y1', ay1);
+            lines[i * 2].setAttribute('x2', ax2);
+            lines[i * 2].setAttribute('y2', ay2);
+            setArrowhead(arrows[i * 2], ax1, ay1, ax2, ay2);
 
             // Arrow B: right edge, vertical center of pill i → center-top of pill i+1
-            const b = lines[i * 2 + 1];
-            b.setAttribute('x1', from.right - cRect.left + 2);
-            b.setAttribute('y1', from.top + from.height / 2 - cRect.top);
-            b.setAttribute('x2', to.left + to.width / 2 - cRect.left);
-            b.setAttribute('y2', to.top - cRect.top - 2);
+            const bx1 = from.right - cRect.left + 2;
+            const by1 = from.top + from.height / 2 - cRect.top;
+            const bx2 = to.left + to.width / 2 - cRect.left;
+            const by2 = to.top - cRect.top - 2;
+            lines[i * 2 + 1].setAttribute('x1', bx1);
+            lines[i * 2 + 1].setAttribute('y1', by1);
+            lines[i * 2 + 1].setAttribute('x2', bx2);
+            lines[i * 2 + 1].setAttribute('y2', by2);
+            setArrowhead(arrows[i * 2 + 1], bx1, by1, bx2, by2);
         }
     }
     syncDirectionUIVisibility();
