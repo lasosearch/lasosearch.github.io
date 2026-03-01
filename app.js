@@ -3866,6 +3866,8 @@ function highlightPlace(index) {
 let lastSearchTime = 0;
 const MIN_SEARCH_INTERVAL = 1000; // 1 second between searches
 let _lastSearchedAddress = null;  // tracks the string that produced the current pin
+let _lastSearchLocation = null;   // { lat, lng } GPS coords used for that search
+const _SEARCH_MOVE_THRESHOLD = 500; // meters — re-search place names if user moved this far
 
 // ── localStorage geocode cache ──────────────────────────────────────────
 const _GEO_CACHE_KEY = 'laso_geocode_cache_v2';
@@ -3954,37 +3956,56 @@ async function searchAddress() {
 
     if (!address) return;
 
-    // Same string already searched and pin is on the map → just recenter
+    // Same string already searched and pin is on the map → decide whether
+    // to re-search or just recenter.
+    //   • Addresses always resolve to the same place → just recenter.
+    //   • Place names ("Trader Joes") depend on proximity → re-search if
+    //     the user has physically moved since the last search.
     const normAddr = _geoCacheKey(address);
     if (normAddr === _lastSearchedAddress && searchAddressMarker && map.hasLayer(searchAddressMarker)) {
-        if (_isAtMyLocation) {
-            _isAtMyLocation = false;
-            _myLocationCenter = null;
-            updateMyLocationButtonState();
-        }
-        const pinLatLng = searchAddressMarker.getLatLng();
-        const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
-        const flyTarget = _pinCenterForOverlay(pinLatLng, targetZoom);
-        isLocationSearchZoom = true;
-        map.flyTo(flyTarget, targetZoom, { duration: 1.0 });
-        const epoch = _clearEpoch;
-        const openPopup = () => {
-            if (_clearEpoch !== epoch) return;
-            if (map.hasLayer(searchAddressMarker)) searchAddressMarker.openPopup();
-        };
-        map.once('moveend', () => {
-            isLocationSearchZoom = false;
-            currentZoomLevel = map.getZoom() - initialZoom;
-            updateZoomLevelIndicator();
-            updateDrawButtonState();
-            if (_panToAvailableCanvas(pinLatLng)) {
-                map.once('moveend', openPopup);
-            } else {
-                openPopup();
+        let shouldReSearch = false;
+        if (!_looksLikeAddress(address) && _lastSearchLocation) {
+            // Place name — check if user has moved significantly
+            const cur = _getUserLocation();
+            const dist = calculateDistance(
+                [cur.lat, cur.lng],
+                [_lastSearchLocation.lat, _lastSearchLocation.lng]
+            );
+            if (dist > _SEARCH_MOVE_THRESHOLD) {
+                shouldReSearch = true;
+                console.log(`[searchAddress] Re-searching "${address}" — user moved ${dist.toFixed(0)}m since last search`);
             }
-        });
-        updateStatus('Re-centering on location');
-        return;
+        }
+        if (!shouldReSearch) {
+            if (_isAtMyLocation) {
+                _isAtMyLocation = false;
+                _myLocationCenter = null;
+                updateMyLocationButtonState();
+            }
+            const pinLatLng = searchAddressMarker.getLatLng();
+            const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
+            const flyTarget = _pinCenterForOverlay(pinLatLng, targetZoom);
+            isLocationSearchZoom = true;
+            map.flyTo(flyTarget, targetZoom, { duration: 1.0 });
+            const epoch = _clearEpoch;
+            const openPopup = () => {
+                if (_clearEpoch !== epoch) return;
+                if (map.hasLayer(searchAddressMarker)) searchAddressMarker.openPopup();
+            };
+            map.once('moveend', () => {
+                isLocationSearchZoom = false;
+                currentZoomLevel = map.getZoom() - initialZoom;
+                updateZoomLevelIndicator();
+                updateDrawButtonState();
+                if (_panToAvailableCanvas(pinLatLng)) {
+                    map.once('moveend', openPopup);
+                } else {
+                    openPopup();
+                }
+            });
+            updateStatus('Re-centering on location');
+            return;
+        }
     }
 
     // Only cache addresses (e.g. "123 Main St"), never place names
@@ -3997,6 +4018,7 @@ async function searchAddress() {
             const cn = cached.name || (cached.namedetails && cached.namedetails.name) || cached.display_name || '';
             console.log(`[searchAddress] CACHE HIT for "${address}" → "${cn}" [${cached.lat}, ${cached.lon}]`);
             _lastSearchedAddress = normAddr;
+            _lastSearchLocation = _getUserLocation();
             displayGeocodeResult(cached, address);
             return;
         }
@@ -4062,6 +4084,7 @@ async function searchAddress() {
                 _saveGeoCache(cache);
             }
             _lastSearchedAddress = normAddr;
+            _lastSearchLocation = { ...center }; // snapshot GPS used for this search
 
             displayGeocodeResult(result, address);
         } else {
