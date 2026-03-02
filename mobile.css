@@ -62,11 +62,17 @@ body.is-mobile .header-actions > .draw-btn-wrapper > .btn.btn-secondary {
     box-shadow: 0 4px 0 var(--border-color);
 }
 
-body.is-mobile .search-btn {
+body.is-mobile .search-btn,
+body.is-mobile .search-clear-btn {
     border: 2px solid var(--primary-dark);
     box-shadow: 0 4px 0 var(--primary-dark);
     transform: translateY(0);
     transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+body.is-mobile .search-clear-btn {
+    border-color: var(--border-color);
+    box-shadow: 0 4px 0 var(--border-color);
 }
 
 body.is-mobile .filter-sort-controls #clear-filters-btn {
@@ -105,6 +111,11 @@ body.is-mobile .search-btn.pressed {
     box-shadow: 0 2px 0 var(--primary-dark);
 }
 
+body.is-mobile .search-clear-btn.pressed {
+    transform: translateY(2px);
+    box-shadow: 0 2px 0 var(--border-color);
+}
+
 body.is-mobile .filter-sort-controls #clear-filters-btn.pressed {
     transform: translateY(0px); /* -2px baseline + 2px press-down */
     box-shadow: 0 2px 0 var(--border-color);
@@ -136,6 +147,12 @@ body.is-mobile .btn-outline:active {
 body.is-mobile .search-btn:hover,
 body.is-mobile .search-btn:active {
     background: var(--primary-color);
+}
+
+body.is-mobile .search-clear-btn:hover,
+body.is-mobile .search-clear-btn:active {
+    background: var(--bg-tertiary);
+    color: var(--text-tertiary);
 }
 
 body.is-mobile .settings-btn:hover,
@@ -173,6 +190,7 @@ body.is-mobile .header {
 body.is-mobile .logo {
     order: 1;
     flex-shrink: 0;
+    display: none;
 }
 
 body.is-mobile .logo span {
@@ -194,12 +212,12 @@ body.is-mobile .search-box input {
     font-size: 16px;
 }
 
-/* Pull search button out of search-box on mobile.
+/* Pull search-clear and search buttons out of search-box on mobile.
    Structural properties (width, height, flex, border-radius, transition)
    mirror .header > .settings-btn exactly — only colors differ. */
+body.is-mobile .search-box .search-clear-btn,
 body.is-mobile .search-box .search-btn {
     position: absolute;
-    right: -52px;
     top: 50%;
     transform: translateY(calc(-50% - 2px));
     width: var(--row-h);
@@ -207,14 +225,40 @@ body.is-mobile .search-box .search-btn {
     flex: 0 0 auto;
     border-radius: var(--radius-sm);
     font-size: 15px;
-    display: flex;
+    display: none;
     align-items: center;
     justify-content: center;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body.is-mobile .search-box .search-btn {
+    right: calc(-1 * var(--row-h) - 8px);
+    display: flex;
+}
+
+body.is-mobile .search-box .search-clear-btn {
+    right: calc(-1 * var(--row-h) - 8px);
+    background: var(--bg-tertiary);
+}
+
+/* When X is visible, push arrow button to second slot */
+body.is-mobile .has-clear .search-box .search-btn {
+    right: calc(-2 * var(--row-h) - 16px);
+}
+
+body.is-mobile .search-box .search-clear-btn.visible {
+    display: flex;
 }
 
 body.is-mobile .search-box .search-btn.pressed {
     transform: translateY(calc(-50% - 2px + 2px));
     box-shadow: 0 2px 0 var(--primary-dark);
+}
+
+body.is-mobile .search-box .search-clear-btn.pressed {
+    transform: translateY(calc(-50% - 2px + 2px));
+    box-shadow: 0 2px 0 var(--border-color);
 }
 
 body.is-mobile .search-container {
@@ -223,7 +267,11 @@ body.is-mobile .search-container {
     min-width: 0;
     max-width: none;
     position: relative;
-    margin-right: 52px;
+    margin-right: calc(var(--row-h) + 8px);
+}
+
+body.is-mobile .search-container.has-clear {
+    margin-right: calc(2 * var(--row-h) + 16px);
 }
 
 /* Actions row: force to row 2, full width, wraps so filters get row 3 */
@@ -291,6 +339,8 @@ body.is-mobile .header > .settings-btn {
     box-shadow: 0 4px 0 var(--border-color);
     transform: translateY(-2px);
     transition: transform 0.15s ease, box-shadow 0.15s ease;
+    padding: 0;
+    box-sizing: border-box;
 }
 
 body.is-mobile .header > .settings-btn.pressed {

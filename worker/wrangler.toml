@@ -5,12 +5,23 @@ compatibility_date = "2024-01-01"
 [vars]
 # Non-secret config (if needed in future)
 
-# The GOOGLE_PLACES_API_KEY is stored as a secret via:
-#   wrangler secret put GOOGLE_PLACES_API_KEY
-# Never put it here.
+# Secrets (set via `wrangler secret put <NAME>`):
+#   GOOGLE_PLACES_API_KEY — Google Places API key
+#   YELP_API_KEY          — Yelp Fusion API key
+
+# KV namespace for Yelp daily rate limiting.
+# Create it:  wrangler kv namespace create RATE_LIMIT
+# Then paste the id below.
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "PASTE_KV_NAMESPACE_ID_HERE"
 
 # Local development — run: wrangler dev --env dev
 # Enables localhost/127.0.0.1 origins so you can test the site locally.
 # Production deploys (wrangler deploy) never set this, so localhost is blocked.
 [env.dev.vars]
 ALLOW_LOCAL_ORIGINS = "true"
+
+[[env.dev.kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "PASTE_KV_NAMESPACE_ID_HERE"

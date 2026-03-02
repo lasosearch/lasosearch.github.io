@@ -1098,7 +1098,13 @@ function updateZoomFitButtonState() {
     container.classList.toggle('tooltip-enabled', showTooltip);
     if (!showTooltip) {
         container.classList.remove('tooltip-visible');
-        container.classList.remove('tooltip-dismissed');
+        // Only remove tooltip-dismissed when no animation is in progress.
+        // During fit/search animations the state flickers (showTooltip toggles),
+        // and removing tooltip-dismissed mid-animation lets sticky mobile :hover
+        // flash the "already in zoom fit" tooltip erroneously.
+        if (!isLocationSearchZoom && !isAutoFittingPolygon) {
+            container.classList.remove('tooltip-dismissed');
+        }
     }
 
     if (tooltip) {
@@ -2273,6 +2279,9 @@ function applyFiltersAndSort({ resetToFirstPage = true } = {}) {
     }
 
     allSearchResults = sorted;
+
+    // Mega pin refresh: if the search pin exists, re-enrich it with draw search data
+    _refreshMegaPin();
 
     if (resetToFirstPage) {
         currentDisplayOffset = 0;
@@ -3538,9 +3547,27 @@ function updateAllMarkers() {
     });
     markers = markers.filter(m => m.isDrawingPoint);
 
+    // ── Detect which draw-search index is the mega-pin duplicate ──
+    // If the red search pin exists and has a mega-pin match, we suppress
+    // the blue marker for that index (the red pin already shows its data).
+    let suppressIndex = -1;
+    if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
+        const enrichment = searchAddressMarker._searchEnrichment;
+        if (enrichment && enrichment._megaPin && enrichment._megaPinIndex >= 0) {
+            suppressIndex = enrichment._megaPinIndex;
+            console.log(`[Mega pin] Suppressing blue marker for index ${suppressIndex} ("${enrichment._megaPinPlace?.name}") — red pin covers it`);
+        }
+    }
+
     // Add markers for ALL results, not just current page
     allSearchResults.forEach((place, index) => {
         if (!place.coordinates) return;
+
+        // Skip creating blue marker if this place is already represented by the red search pin
+        if (index === suppressIndex) {
+            console.log(`[Mega pin] Skipped blue marker #${index}: "${place.name}" (duplicate of red search pin)`);
+            return;
+        }
 
         const mainType = Array.isArray(place.place_type) ? place.place_type[0] : (place.place_type || 'Business');
         const iconClass = getPlaceIcon(mainType);
@@ -3825,9 +3852,16 @@ function highlightPlace(index) {
         const showMarker = () => {
             // Revert any previous green marker, then highlight the new one
             clearHighlightedMarker();
-            const marker = markers.find(m => m.placeIndex === index);
+            let marker = markers.find(m => m.placeIndex === index);
+            // If no blue marker (suppressed mega pin), use the red search pin
+            const isMegaPinFallback = !marker && searchAddressMarker
+                && searchAddressMarker._searchEnrichment
+                && searchAddressMarker._searchEnrichment._megaPinIndex === index;
+            if (isMegaPinFallback) marker = searchAddressMarker;
+
             if (marker) {
-                setMarkerHighlighted(marker, true);
+                // Don't change the red search pin's icon — only highlight blue markers
+                if (!isMegaPinFallback) setMarkerHighlighted(marker, true);
                 if (isMobileView()) {
                     const sidebar = document.getElementById('results-sidebar');
                     const isOpen = sidebar && sidebar.classList.contains('open');
@@ -3965,6 +3999,227 @@ function _looksLikeAddress(query) {
 function _normalizeForMatch(str) {
     return str.replace(/['\u2018\u2019]/g, '').toLowerCase();
 }
+
+// Overpass API endpoint (free, used for category search + enrichment)
+const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+
+// ── Generic category → Overpass tag mapping ─────────────────────────────
+// When the user types a generic word like "sushi" or "gas station", we
+// bypass Nominatim/Photon (which look for a PLACE with that name) and
+// instead query Overpass for the nearest POI matching the OSM tag.
+//
+// Each entry: { filter: '<Overpass tag filter>', label: '<display name>' }
+// The filter is injected into: node{filter}(around:R,lat,lon);
+const _CATEGORY_MAP = {
+    // ── Cuisine / food types ──
+    'sushi':        { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"sushi"]', label: 'sushi restaurant' },
+    'pizza':        { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"pizza"]', label: 'pizza place' },
+    'tacos':        { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"mexican|taco"]', label: 'taco place' },
+    'taco':         { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"mexican|taco"]', label: 'taco place' },
+    'burgers':      { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"burger"]', label: 'burger place' },
+    'burger':       { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"burger"]', label: 'burger place' },
+    'chinese':      { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"chinese"]', label: 'Chinese restaurant' },
+    'thai':         { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"thai"]', label: 'Thai restaurant' },
+    'indian':       { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"indian"]', label: 'Indian restaurant' },
+    'mexican':      { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"mexican"]', label: 'Mexican restaurant' },
+    'italian':      { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"italian|pasta"]', label: 'Italian restaurant' },
+    'ramen':        { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"ramen|japanese"]', label: 'ramen shop' },
+    'bbq':          { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"bbq|barbecue"]', label: 'BBQ restaurant' },
+    'barbecue':     { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"bbq|barbecue"]', label: 'BBQ restaurant' },
+    'seafood':      { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"seafood|fish"]', label: 'seafood restaurant' },
+    'korean':       { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"korean"]', label: 'Korean restaurant' },
+    'vietnamese':   { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"vietnamese|pho"]', label: 'Vietnamese restaurant' },
+    'pho':          { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"vietnamese|pho"]', label: 'pho restaurant' },
+    'greek':        { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"greek"]', label: 'Greek restaurant' },
+    'mediterranean':{ filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"mediterranean"]', label: 'Mediterranean restaurant' },
+    'vegan':        { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"vegan"]', label: 'vegan restaurant' },
+    'vegetarian':   { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"vegetarian|vegan"]', label: 'vegetarian restaurant' },
+    'wings':        { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"wings|chicken"]', label: 'wings place' },
+    'chicken':      { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"chicken"]', label: 'chicken restaurant' },
+    'sandwich':     { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"sandwich|sub|deli"]', label: 'sandwich shop' },
+    'sandwiches':   { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"sandwich|sub|deli"]', label: 'sandwich shop' },
+    'deli':         { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"deli|sandwich"]', label: 'deli' },
+    'ice cream':    { filter: '["amenity"~"restaurant|fast_food|ice_cream"]["cuisine"~"ice_cream"]', label: 'ice cream shop' },
+    'donuts':       { filter: '["amenity"~"restaurant|fast_food|cafe"]["cuisine"~"donut"]', label: 'donut shop' },
+    'doughnuts':    { filter: '["amenity"~"restaurant|fast_food|cafe"]["cuisine"~"donut"]', label: 'donut shop' },
+    'bagels':       { filter: '["amenity"~"restaurant|fast_food|cafe"]["cuisine"~"bagel"]', label: 'bagel shop' },
+    'breakfast':    { filter: '["amenity"~"restaurant|cafe"]["cuisine"~"breakfast|brunch"]', label: 'breakfast spot' },
+    'brunch':       { filter: '["amenity"~"restaurant|cafe"]["cuisine"~"breakfast|brunch"]', label: 'brunch spot' },
+    'noodles':      { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"noodle|ramen|pho"]', label: 'noodle shop' },
+    'soup':         { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"soup"]', label: 'soup place' },
+    'steak':        { filter: '["amenity"~"restaurant"]["cuisine"~"steak"]', label: 'steakhouse' },
+    'steakhouse':   { filter: '["amenity"~"restaurant"]["cuisine"~"steak"]', label: 'steakhouse' },
+    'wings':        { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"wings|chicken"]', label: 'wings place' },
+    'salad':        { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"salad|healthy"]', label: 'salad place' },
+    'acai':         { filter: '["amenity"~"restaurant|fast_food|cafe"]["cuisine"~"acai|juice"]', label: 'açaí bowl shop' },
+    'falafel':      { filter: '["amenity"~"restaurant|fast_food"]["cuisine"~"falafel|middle_eastern"]', label: 'falafel place' },
+    'crepes':       { filter: '["amenity"~"restaurant|fast_food|cafe"]["cuisine"~"crepe|french"]', label: 'crêpe place' },
+    'dim sum':      { filter: '["amenity"~"restaurant"]["cuisine"~"dim_sum|chinese"]', label: 'dim sum restaurant' },
+    'curry':        { filter: '["amenity"~"restaurant"]["cuisine"~"curry|indian|thai"]', label: 'curry restaurant' },
+    'pasta':        { filter: '["amenity"~"restaurant"]["cuisine"~"pasta|italian"]', label: 'pasta place' },
+    'tapas':        { filter: '["amenity"~"restaurant"]["cuisine"~"tapas|spanish"]', label: 'tapas bar' },
+    'hibachi':      { filter: '["amenity"~"restaurant"]["cuisine"~"hibachi|japanese|teppanyaki"]', label: 'hibachi restaurant' },
+    'buffet':       { filter: '["amenity"~"restaurant"]["cuisine"~"buffet"]', label: 'buffet' },
+
+    // ── Drinks ──
+    'coffee':       { filter: '["amenity"="cafe"]', label: 'coffee shop' },
+    'cafe':         { filter: '["amenity"="cafe"]', label: 'café' },
+    'tea':          { filter: '["amenity"~"cafe"]["cuisine"~"tea|bubble_tea"]', label: 'tea shop' },
+    'boba':         { filter: '["amenity"~"cafe|fast_food"]["cuisine"~"bubble_tea"]', label: 'boba shop' },
+    'bubble tea':   { filter: '["amenity"~"cafe|fast_food"]["cuisine"~"bubble_tea"]', label: 'bubble tea shop' },
+    'smoothie':     { filter: '["amenity"~"cafe|fast_food"]["cuisine"~"juice|smoothie"]', label: 'smoothie shop' },
+    'juice':        { filter: '["amenity"~"cafe|fast_food"]["cuisine"~"juice"]', label: 'juice bar' },
+    'bar':          { filter: '["amenity"="bar"]', label: 'bar' },
+    'pub':          { filter: '["amenity"~"bar|pub"]', label: 'pub' },
+    'brewery':      { filter: '["craft"="brewery"]', label: 'brewery' },
+    'wine bar':     { filter: '["amenity"="bar"]["cuisine"~"wine"]', label: 'wine bar' },
+    'cocktails':    { filter: '["amenity"="bar"]', label: 'cocktail bar' },
+
+    // ── Amenities ──
+    'gas station':  { filter: '["amenity"="fuel"]', label: 'gas station' },
+    'gas':          { filter: '["amenity"="fuel"]', label: 'gas station' },
+    'fuel':         { filter: '["amenity"="fuel"]', label: 'gas station' },
+    'pharmacy':     { filter: '["amenity"="pharmacy"]', label: 'pharmacy' },
+    'hospital':     { filter: '["amenity"="hospital"]', label: 'hospital' },
+    'bank':         { filter: '["amenity"="bank"]', label: 'bank' },
+    'atm':          { filter: '["amenity"="atm"]', label: 'ATM' },
+    'gym':          { filter: '["leisure"="fitness_centre"]', label: 'gym' },
+    'park':         { filter: '["leisure"="park"]', label: 'park' },
+    'library':      { filter: '["amenity"="library"]', label: 'library' },
+    'post office':  { filter: '["amenity"="post_office"]', label: 'post office' },
+    'school':       { filter: '["amenity"~"school"]', label: 'school' },
+    'church':       { filter: '["amenity"="place_of_worship"]["religion"="christian"]', label: 'church' },
+    'mosque':       { filter: '["amenity"="place_of_worship"]["religion"="muslim"]', label: 'mosque' },
+    'synagogue':    { filter: '["amenity"="place_of_worship"]["religion"="jewish"]', label: 'synagogue' },
+    'parking':      { filter: '["amenity"="parking"]', label: 'parking' },
+    'ev charger':   { filter: '["amenity"="charging_station"]', label: 'EV charger' },
+    'charging station': { filter: '["amenity"="charging_station"]', label: 'charging station' },
+    'restroom':     { filter: '["amenity"="toilets"]', label: 'restroom' },
+    'bathroom':     { filter: '["amenity"="toilets"]', label: 'restroom' },
+    'playground':   { filter: '["leisure"="playground"]', label: 'playground' },
+
+    // ── Shops ──
+    'grocery':      { filter: '["shop"~"supermarket|grocery|convenience"]', label: 'grocery store' },
+    'supermarket':  { filter: '["shop"="supermarket"]', label: 'supermarket' },
+    'convenience store': { filter: '["shop"="convenience"]', label: 'convenience store' },
+    'hardware':     { filter: '["shop"="hardware"]', label: 'hardware store' },
+    'bookstore':    { filter: '["shop"="books"]', label: 'bookstore' },
+    'bakery':       { filter: '["shop"="bakery"]', label: 'bakery' },
+    'butcher':      { filter: '["shop"="butcher"]', label: 'butcher' },
+    'florist':      { filter: '["shop"="florist"]', label: 'florist' },
+    'pet store':    { filter: '["shop"="pet"]', label: 'pet store' },
+    'liquor store': { filter: '["shop"="alcohol"]', label: 'liquor store' },
+    'thrift store': { filter: '["shop"~"second_hand|charity"]', label: 'thrift store' },
+    'clothing':     { filter: '["shop"="clothes"]', label: 'clothing store' },
+    'shoes':        { filter: '["shop"="shoes"]', label: 'shoe store' },
+    'electronics':  { filter: '["shop"="electronics"]', label: 'electronics store' },
+
+    // ── Services ──
+    'laundromat':   { filter: '["shop"="laundry"]', label: 'laundromat' },
+    'laundry':      { filter: '["shop"="laundry"]', label: 'laundromat' },
+    'car wash':     { filter: '["amenity"="car_wash"]', label: 'car wash' },
+    'dentist':      { filter: '["amenity"="dentist"]', label: 'dentist' },
+    'doctor':       { filter: '["amenity"~"doctors|clinic"]', label: 'doctor' },
+    'veterinarian': { filter: '["amenity"="veterinary"]', label: 'veterinarian' },
+    'vet':          { filter: '["amenity"="veterinary"]', label: 'veterinarian' },
+    'hair salon':   { filter: '["shop"="hairdresser"]', label: 'hair salon' },
+    'barber':       { filter: '["shop"="hairdresser"]', label: 'barber' },
+    'nail salon':   { filter: '["shop"~"beauty|nails"]', label: 'nail salon' },
+    'spa':          { filter: '["leisure"~"spa|sauna"]', label: 'spa' },
+    'hotel':        { filter: '["tourism"="hotel"]', label: 'hotel' },
+    'motel':        { filter: '["tourism"="motel"]', label: 'motel' },
+    'movie theater':{ filter: '["amenity"="cinema"]', label: 'movie theater' },
+    'cinema':       { filter: '["amenity"="cinema"]', label: 'movie theater' },
+    'museum':       { filter: '["tourism"="museum"]', label: 'museum' },
+    'restaurant':   { filter: '["amenity"="restaurant"]', label: 'restaurant' },
+    'fast food':    { filter: '["amenity"="fast_food"]', label: 'fast food' },
+};
+
+// Suffixes to strip before matching (e.g. "sushi near me" → "sushi")
+const _CATEGORY_STRIP_RE = /\s+(near\s+me|nearby|close\s+by|around\s+here|restaurant|restaurants|place|places|shop|shops|store|stores)$/i;
+
+/**
+ * Check if a search query matches a generic category.
+ * Returns the category entry { filter, label } or null.
+ */
+function _matchCategory(query) {
+    if (_looksLikeAddress(query)) return null;
+    let q = query.trim().toLowerCase();
+    // Strip common suffixes like "near me", "restaurant", etc.
+    q = q.replace(_CATEGORY_STRIP_RE, '').trim();
+    // Also strip a second pass (e.g. "sushi restaurant near me" → "sushi restaurant" → "sushi")
+    q = q.replace(_CATEGORY_STRIP_RE, '').trim();
+    return _CATEGORY_MAP[q] || null;
+}
+
+/**
+ * Query Overpass for the nearest POI matching an OSM tag filter.
+ * Returns a Nominatim-like result object or null.
+ */
+async function _searchNearestPOI(category, lat, lon) {
+    const radius = 10000; // 10 km search radius
+    const filter = category.filter;
+    const query = `[out:json][timeout:10];(node${filter}(around:${radius},${lat},${lon});way${filter}(around:${radius},${lat},${lon}););out center tags qt;`;
+
+    try {
+        const response = await fetch(OVERPASS_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `data=${encodeURIComponent(query)}`
+        });
+        if (!response.ok) return null;
+        const data = await response.json();
+        const elements = data.elements;
+        if (!elements || elements.length === 0) return null;
+
+        // Pick the closest element to (lat, lon)
+        let best = null, bestDist = Infinity;
+        for (const el of elements) {
+            const elLat = el.lat ?? el.center?.lat;
+            const elLon = el.lon ?? el.center?.lon;
+            if (elLat == null || elLon == null) continue;
+            const d = Math.hypot(elLat - lat, elLon - lon);
+            if (d < bestDist) { bestDist = d; best = el; }
+        }
+        if (!best) return null;
+
+        const tags = best.tags || {};
+        const elLat = best.lat ?? best.center?.lat;
+        const elLon = best.lon ?? best.center?.lon;
+
+        // Build Nominatim-like result for displayGeocodeResult
+        const addrParts = [];
+        if (tags['addr:housenumber']) addrParts.push(tags['addr:housenumber']);
+        if (tags['addr:street']) addrParts.push(tags['addr:street']);
+        if (tags['addr:city']) addrParts.push(tags['addr:city']);
+        if (tags['addr:state']) addrParts.push(tags['addr:state']);
+
+        return {
+            lat: elLat,
+            lon: elLon,
+            name: tags.name || category.label,
+            display_name: tags.name || category.label,
+            osm_type: best.type,
+            osm_id: best.id,
+            address: {
+                house_number: tags['addr:housenumber'],
+                road: tags['addr:street'],
+                city: tags['addr:city'],
+                state: tags['addr:state'],
+                postcode: tags['addr:postcode']
+            },
+            _categoryMatch: true,      // flag so we know this came from category search
+            _categoryLabel: category.label,
+            opening_hours: tags.opening_hours,
+            phone: tags.phone || tags['contact:phone'],
+            website: tags.website || tags['contact:website'],
+        };
+    } catch (e) {
+        console.warn('[Overpass category search]', e);
+        return null;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 
 async function searchAddress() {
@@ -4051,12 +4306,36 @@ async function searchAddress() {
     }
     lastSearchTime = Date.now();
 
-    showLoading(true, 'Searching for location...');
-    updateStatus('Searching for address...', true);
-
     // Use the user's actual GPS location for proximity ranking, not the
     // map center (which may have moved to a previous search result).
     const center = _getUserLocation();
+
+    // ── Category search (e.g. "sushi", "gas station", "coffee near me") ──
+    // Generic terms are searched via Overpass (OSM tag match) instead of
+    // geocoding, which would just look for a place NAMED "sushi".
+    const categoryMatch = _matchCategory(address);
+    if (categoryMatch) {
+        showLoading(true, `Finding nearest ${categoryMatch.label}...`);
+        updateStatus(`Searching for nearest ${categoryMatch.label}...`, true);
+        try {
+            const poiResult = await _searchNearestPOI(categoryMatch, center.lat, center.lng);
+            if (poiResult) {
+                console.log(`[searchAddress] Category match "${address}" → ${categoryMatch.label}: "${poiResult.name}" [${poiResult.lat}, ${poiResult.lon}]`);
+                _lastSearchedAddress = normAddr;
+                _lastSearchLocation = { ...center };
+                showLoading(false);
+                displayGeocodeResult(poiResult, address);
+                return;
+            }
+            // No POI found within radius — fall through to normal geocoding
+            console.log(`[searchAddress] Category "${categoryMatch.label}" — no Overpass results, falling through to geocoder`);
+        } catch (e) {
+            console.warn('[searchAddress] Category search failed, falling through:', e);
+        }
+    }
+
+    showLoading(true, 'Searching for location...');
+    updateStatus('Searching for address...', true);
 
     try {
         // Phase 1: Fire both geocoders in parallel with strong proximity bias.
@@ -4276,6 +4555,8 @@ async function tryPhoton(address) {
                     lon: c[0],
                     display_name: p.name || address,
                     name: p.name,
+                    osm_type: p.osm_type,   // 'N','W','R' → node/way/relation
+                    osm_id: p.osm_id,
                     address: {
                         house_number: p.housenumber,
                         road: p.street,
@@ -4341,9 +4622,33 @@ function displayGeocodeResult(result, searchQuery) {
         })
     }).addTo(map);
 
-    marker.bindPopup(`<b>${result.name || searchQuery}</b><br>${displayAddress}`);
+    marker.bindPopup(_buildSearchPinPopup(result.name || searchQuery, displayAddress, lat, lon, {}) + '<p style="margin:4px 0 0 0;font-size:11px;color:#999;text-align:center;" class="search-pin-loading">Loading details…</p>', { maxWidth: 300, minWidth: 180 });
+
+    // Center map on the red pin when tapped (even if a business pin was selected)
+    marker.on('click', () => {
+        // Deselect any business marker so the map centers on the search pin
+        if (selectedPlaceIndex !== null) {
+            clearHighlightedMarker();
+            selectedPlaceIndex = null;
+        }
+        const pinLL = marker.getLatLng();
+        const currentZoom = map.getZoom();
+        const flyTarget = _pinCenterForOverlay(pinLL, currentZoom);
+        map.panTo(flyTarget);
+    });
+
     searchAddressMarker = marker;
     updateZoomFitButtonState();
+
+    // Update the search textbox with the resolved name + address
+    const input = document.getElementById('address-input');
+    const resolvedName = result.name || searchQuery;
+    if (input) {
+        input.value = resolvedName !== displayAddress
+            ? `${resolvedName}, ${displayAddress}`
+            : displayAddress;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
 
     // Fly to address at target display level (PC: 3, mobile: 2).
     // Use _pinCenterForOverlay so the pin lands centered in the available
@@ -4376,6 +4681,423 @@ function displayGeocodeResult(result, searchQuery) {
     // Save search pin coordinates for priority sorting
     searchPinCoords = [lat, lon];
     directionLocations.B = { lat: lat, lng: lon, label: displayAddress || searchQuery };
+
+    // Enrich asynchronously — updates popup when data arrives
+    _enrichSearchedLocation(result, marker, searchQuery, displayAddress, epochAtSearch);
+}
+
+// ── Search-pin enrichment (Overpass + Yelp) ─────────────────────────────
+
+/**
+ * Parse an OSM opening_hours string and return a human-readable status.
+ * Handles common formats; returns the raw string for exotic ones.
+ */
+function _parseOpenStatus(ohString) {
+    if (!ohString) return null;
+    try {
+        const now = new Date();
+        const dayNames = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+        const today = dayNames[now.getDay()];
+        const nowMins = now.getHours() * 60 + now.getMinutes();
+
+        // Split rules by semicolons, find one matching today
+        const rules = ohString.split(';').map(r => r.trim());
+        for (const rule of rules) {
+            // Match patterns like "Mo-Fr 08:00-21:00" or "Sa,Su 09:00-18:00"
+            const m = rule.match(/^([A-Za-z, -]+)\s+(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})$/);
+            if (!m) continue;
+            const daysPart = m[1];
+            const openTime = m[2].split(':').reduce((h, mi) => +h * 60 + +mi);
+            const closeTime = m[3].split(':').reduce((h, mi) => +h * 60 + +mi);
+
+            // Check if today is in the day range
+            const dayRanges = daysPart.split(',').map(d => d.trim());
+            let matchesToday = false;
+            for (const dr of dayRanges) {
+                if (dr.includes('-')) {
+                    const [start, end] = dr.split('-').map(d => dayNames.indexOf(d.trim()));
+                    if (start < 0 || end < 0) continue;
+                    const todayIdx = dayNames.indexOf(today);
+                    matchesToday = start <= end
+                        ? todayIdx >= start && todayIdx <= end
+                        : todayIdx >= start || todayIdx <= end;
+                } else {
+                    matchesToday = dr.trim() === today;
+                }
+                if (matchesToday) break;
+            }
+            if (!matchesToday) continue;
+
+            // Format close time nicely
+            const closeH = Math.floor(closeTime / 60);
+            const closeM = closeTime % 60;
+            const closeFmt = closeM === 0
+                ? `${closeH > 12 ? closeH - 12 : closeH} ${closeH >= 12 ? 'PM' : 'AM'}`
+                : `${closeH > 12 ? closeH - 12 : closeH}:${String(closeM).padStart(2, '0')} ${closeH >= 12 ? 'PM' : 'AM'}`;
+            const openH = Math.floor(openTime / 60);
+            const openM = openTime % 60;
+            const openFmt = openM === 0
+                ? `${openH > 12 ? openH - 12 : openH} ${openH >= 12 ? 'PM' : 'AM'}`
+                : `${openH > 12 ? openH - 12 : openH}:${String(openM).padStart(2, '0')} ${openH >= 12 ? 'PM' : 'AM'}`;
+
+            if (nowMins >= openTime && nowMins < closeTime) {
+                return { open: true, text: `Open · Closes ${closeFmt}` };
+            } else if (nowMins < openTime) {
+                return { open: false, text: `Closed · Opens ${openFmt}` };
+            } else {
+                return { open: false, text: `Closed · Opened ${openFmt}` };
+            }
+        }
+        // 24/7
+        if (/24\s*\/\s*7/.test(ohString)) return { open: true, text: 'Open 24/7' };
+    } catch { /* fall through */ }
+    // Couldn't parse — return raw string
+    return { open: null, text: ohString };
+}
+
+/**
+ * Build the enriched popup HTML for the search pin.
+ * Compact layout: action circles on top (thick black borders), info below.
+ */
+function _buildSearchPinPopup(name, address, lat, lon, enrichment) {
+    const searchTerm = address ? `${name}, ${address}` : name;
+
+    // Google Maps URL — IDENTICAL construction to draw-search pins (buildPopupContent).
+    // Use place URI or search URL as href; the directions-capable click interceptor
+    // handles direction mode when enabled.  Never hardcode direction URLs here.
+    const googleHref = enrichment.googleMapsUri
+        || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(searchTerm)}`;
+    const googleTarget = '_blank';
+
+    // Apple Maps URL — same as draw-search pins
+    const appleHref = `https://maps.apple.com/?q=${encodeURIComponent(name)}&ll=${lat},${lon}&z=19`;
+    const appleTarget = '_blank';
+
+    // Shared circle style — thick black border, special location-pin look
+    const circleStyle = 'width:34px;height:34px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;text-decoration:none;border:2.5px solid #222;';
+
+    // Phone circle
+    const phoneIconHtml = enrichment.phone
+        ? `<a href="tel:${enrichment.phone}" title="Call ${enrichment.phone}" style="${circleStyle}color:#34a853;font-size:13px;">` +
+              `<i class="fas fa-phone"></i></a>`
+        : `<div title="Phone unavailable" style="${circleStyle}color:#b0b0b0;font-size:13px;position:relative;">` +
+              `<i class="fas fa-phone"></i>` +
+              `<div style="position:absolute;width:24px;height:2px;background:#b0b0b0;transform:rotate(-45deg);border-radius:1px;"></div>` +
+          `</div>`;
+
+    // ── Top row: three action circles ──
+    const circlesHtml =
+        `<div style="display:flex;justify-content:center;gap:10px;margin-bottom:8px;">` +
+            `<a href="${googleHref}" target="${googleTarget}" rel="noopener" title="Google Maps" class="directions-capable" data-dest-lat="${lat}" data-dest-lng="${lon}" data-search-term="${searchTerm.replace(/"/g, '&quot;')}" data-map-provider="google" style="${circleStyle}color:#4285f4;font-size:13px;">` +
+                `<i class="fab fa-google"></i></a>` +
+            `<a href="${appleHref}" target="${appleTarget}" rel="noopener" title="Apple Maps" class="directions-capable" data-dest-lat="${lat}" data-dest-lng="${lon}" data-dest-name="${name.replace(/"/g, '&quot;')}" data-map-provider="apple" style="${circleStyle}color:#333;font-size:15px;">` +
+                `<i class="fab fa-apple"></i></a>` +
+            phoneIconHtml +
+        `</div>`;
+
+    // ── Info section below circles ──
+    let infoHtml = `<div style="text-align:center;">`;
+    infoHtml += `<div style="font-size:14px;color:#202124;font-weight:600;margin-bottom:2px;">${name}</div>`;
+    if (enrichment.placeType) {
+        infoHtml += `<div style="font-size:10px;color:#666;margin-bottom:2px;"><i class="fas ${typeof getPlaceIcon === 'function' ? getPlaceIcon(enrichment.placeType) : 'fa-store'}" style="margin-right:3px;"></i>${enrichment.placeType}</div>`;
+    }
+    if (address && address !== name) {
+        infoHtml += `<div style="font-size:11px;color:#5f6368;margin-bottom:2px;">${address}</div>`;
+    }
+
+    // Rating (Google via mega pin, or Yelp)
+    if (enrichment.rating) {
+        const ratingStr = typeof enrichment.rating === 'number' ? enrichment.rating.toFixed(1) : enrichment.rating;
+        infoHtml += `<div style="font-size:12px;color:#f4b400;font-weight:500;"><i class="fas fa-star" style="font-size:10px;"></i> ${ratingStr}`;
+        if (enrichment.reviewCount) infoHtml += ` <span style="color:#999;font-weight:400;font-size:10px;">(${enrichment.reviewCount})</span>`;
+        infoHtml += '</div>';
+    }
+
+    // Hours
+    if (enrichment.hours) {
+        const cls = enrichment.hours.open === true ? 'search-pin-open'
+                  : enrichment.hours.open === false ? 'search-pin-closed'
+                  : 'search-pin-hours';
+        infoHtml += `<div style="font-size:11px;margin-top:1px;"><span class="${cls}">${enrichment.hours.text}</span></div>`;
+    }
+
+    // Website
+    if (enrichment.website) {
+        const domain = enrichment.website.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+        infoHtml += `<div style="font-size:11px;margin-top:2px;"><i class="fas fa-globe" style="color:#666;margin-right:3px;font-size:10px;"></i><a href="${enrichment.website}" target="_blank" rel="noopener" style="color:#4285f4;text-decoration:none;">${domain}</a></div>`;
+    }
+
+    infoHtml += `</div>`;
+
+    return circlesHtml + infoHtml;
+}
+
+/**
+ * Remove the blue draw-search marker for a given allSearchResults index,
+ * if it's already on the map.  Called when the red search pin absorbs that
+ * place's data (mega pin) so there's no visual duplicate.
+ */
+function _removeDuplicateBlueMarker(placeIndex) {
+    for (let i = markers.length - 1; i >= 0; i--) {
+        const m = markers[i];
+        if (m.isDrawingPoint) continue;
+        if (m.placeIndex === placeIndex) {
+            console.log(`[Mega pin] Removed duplicate blue marker for placeIndex ${placeIndex}`);
+            if (map.hasLayer(m)) map.removeLayer(m);
+            markers.splice(i, 1);
+            return;
+        }
+    }
+}
+
+/**
+ * Normalize a name for fuzzy comparison: lowercase, strip punctuation/whitespace.
+ */
+function _normName(s) {
+    return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Mega pin: find a draw-search business that matches the search pin by
+ * normalized NAME and/or ADDRESS.  Distance alone is unreliable because
+ * different geocoding backends (Nominatim vs Google Places) can place the
+ * same business hundreds of meters apart.  Name + address is the reliable
+ * signal.  Store the full place + index so callers can use buildPopupContent.
+ */
+function _mergeDrawSearchMatch(lat, lon, enrichment, searchName, searchAddress) {
+    if (!allSearchResults || allSearchResults.length === 0) {
+        console.log('[Mega pin] No draw-search results to match against');
+        return;
+    }
+    const pinCoord = [lat, lon];
+
+    // Only consider matches when pin is inside the polygon (if polygon exists)
+    if (currentPolygon && drawingPoints.length >= 3 && !pointInPolygon(pinCoord, drawingPoints)) {
+        console.log('[Mega pin] Search pin is outside polygon — skipping');
+        return;
+    }
+
+    const normSearchName = _normName(searchName);
+    const normSearchAddr = _normName(searchAddress);
+    console.log(`[Mega pin] Looking for match — name="${searchName}" (norm="${normSearchName}"), addr norm="${normSearchAddr}"`);
+
+    let bestPlace = null, bestIndex = -1, bestScore = 0;
+    for (let i = 0; i < allSearchResults.length; i++) {
+        const place = allSearchResults[i];
+        if (!place.coordinates) continue;
+
+        const normPlaceName = _normName(place.name);
+        const normPlaceAddr = _normName(place.address);
+        const d = calculateDistance(pinCoord, place.coordinates);
+
+        // Name match: either contains the other (handles "Regal UA Kaufman Astoria" vs "Regal UA Kaufman Astoria 14")
+        const nameMatch = normSearchName && normPlaceName
+            ? (normPlaceName.includes(normSearchName) || normSearchName.includes(normPlaceName))
+            : false;
+
+        // Address match: normalized addresses share a substring
+        const addrMatch = normSearchAddr && normPlaceAddr
+            ? (normPlaceAddr.includes(normSearchAddr) || normSearchAddr.includes(normPlaceAddr))
+            : false;
+
+        // Score: name+addr=3, name-only=2, addr+close=1
+        let score = 0;
+        if (nameMatch && addrMatch) score = 3;
+        else if (nameMatch) score = 2;
+        else if (addrMatch && d < 200) score = 1;
+
+        if (score > 0) {
+            console.log(`[Mega pin] Candidate #${i}: "${place.name}" addr="${place.address}" dist=${d.toFixed(0)}m nameMatch=${nameMatch} addrMatch=${addrMatch} score=${score}`);
+        }
+
+        if (score > bestScore || (score === bestScore && d < (bestPlace ? calculateDistance(pinCoord, bestPlace.coordinates) : Infinity))) {
+            bestPlace = place;
+            bestIndex = i;
+            bestScore = score;
+        }
+    }
+
+    if (!bestPlace || bestScore === 0) {
+        console.log('[Mega pin] No matching draw-search result found');
+        return;
+    }
+
+    const finalDist = calculateDistance(pinCoord, bestPlace.coordinates);
+    console.log(`[Mega pin] ✓ Matched "${bestPlace.name}" (index ${bestIndex}) score=${bestScore} dist=${finalDist.toFixed(0)}m`);
+
+    enrichment._megaPin = true;
+    enrichment._megaPinPlace = bestPlace;
+    enrichment._megaPinIndex = bestIndex;
+}
+
+/**
+ * Re-enrich an existing search pin when draw-search results arrive later.
+ * Called from the sort/display pipeline after allSearchResults is populated.
+ */
+function _refreshMegaPin() {
+    if (!searchAddressMarker || !map.hasLayer(searchAddressMarker)) return;
+    const ll = searchAddressMarker.getLatLng();
+    // Use the enrichment object stored on the marker (set by _enrichSearchedLocation)
+    const enrichment = searchAddressMarker._searchEnrichment;
+    if (!enrichment) return;
+    if (enrichment._megaPin) return; // already enriched — don't overwrite
+    const name = searchAddressMarker._searchName || '';
+    const address = searchAddressMarker._searchAddress || '';
+    _mergeDrawSearchMatch(ll.lat, ll.lng, enrichment, name, address);
+    if (enrichment._megaPin && enrichment._megaPinPlace) {
+        const wasOpen = searchAddressMarker.isPopupOpen();
+        searchAddressMarker.setPopupContent(
+            buildPopupContent(enrichment._megaPinPlace, enrichment._megaPinIndex, false)
+        );
+        if (wasOpen) searchAddressMarker.openPopup();
+        console.log('[Mega pin] Refreshed search pin with full draw-search popup');
+    }
+}
+
+/**
+ * Asynchronously enrich a searched location pin with Overpass (OSM tags)
+ * and Yelp (rating/reviews).  Updates the popup content as data arrives.
+ */
+async function _enrichSearchedLocation(result, marker, searchQuery, displayAddress, epoch) {
+    const lat = parseFloat(result.lat);
+    const lon = parseFloat(result.lon);
+    const name = result.name || searchQuery;
+    const enrichment = {};
+
+    // Store references on the marker for later mega pin refresh
+    marker._searchEnrichment = enrichment;
+    marker._searchName = name;
+    marker._searchAddress = displayAddress;
+
+    // Seed with data already on the result (e.g. from category/Overpass search)
+    if (result.opening_hours) enrichment.hours = _parseOpenStatus(result.opening_hours);
+    if (result.phone) enrichment.phone = result.phone;
+    if (result.website) enrichment.website = result.website;
+
+    // ── Mega pin: merge draw search data if a matching business is nearby ──
+    _mergeDrawSearchMatch(lat, lon, enrichment, name, displayAddress);
+
+    // If mega pin matched, use the FULL draw-search popup immediately
+    // and remove the duplicate blue marker if it's already on the map.
+    if (enrichment._megaPin && enrichment._megaPinPlace) {
+        const wasOpen = marker.isPopupOpen();
+        marker.setPopupContent(buildPopupContent(enrichment._megaPinPlace, enrichment._megaPinIndex, false));
+        if (wasOpen) marker.openPopup();
+        // Remove existing blue duplicate marker
+        _removeDuplicateBlueMarker(enrichment._megaPinIndex);
+    }
+    // Otherwise if we have partial data, update with compact popup (removes "Loading…")
+    else if (enrichment.hours || enrichment.phone || enrichment.website) {
+        const wasOpen = marker.isPopupOpen();
+        marker.setPopupContent(_buildSearchPinPopup(name, displayAddress, lat, lon, enrichment));
+        if (wasOpen) marker.openPopup();
+    }
+
+    // Overpass enrichment (free — hours, phone, website from OSM)
+    const overpassPromise = _fetchOverpassTags(result, lat, lon);
+
+    // Yelp enrichment (disabled for now — uncomment when worker is configured)
+    // const yelpPromise = _fetchYelpRating(name, lat, lon, displayAddress);
+
+    // Update popup as each resolves
+    const updatePopup = () => {
+        if (_clearEpoch !== epoch) return;
+        if (!map.hasLayer(marker)) return;
+        const wasOpen = marker.isPopupOpen();
+        // If mega pin matched, always use the full draw-search popup
+        if (enrichment._megaPin && enrichment._megaPinPlace) {
+            marker.setPopupContent(buildPopupContent(enrichment._megaPinPlace, enrichment._megaPinIndex, false));
+        } else {
+            marker.setPopupContent(_buildSearchPinPopup(name, displayAddress, lat, lon, enrichment));
+        }
+        if (wasOpen) marker.openPopup();
+    };
+
+    overpassPromise.then(tags => {
+        if (tags) {
+            if (tags.opening_hours) enrichment.hours = _parseOpenStatus(tags.opening_hours);
+            if (tags.phone || tags['contact:phone']) enrichment.phone = tags.phone || tags['contact:phone'];
+            if (tags.website || tags['contact:website']) enrichment.website = tags.website || tags['contact:website'];
+            updatePopup();
+        }
+    }).catch(e => console.warn('[Overpass enrichment]', e));
+
+    // ── Yelp enrichment (disabled) ──────────────────────────────────────
+    // yelpPromise.then(yelp => {
+    //     if (yelp) {
+    //         if (yelp.rating) enrichment.rating = yelp.rating;
+    //         if (yelp.review_count) enrichment.reviewCount = yelp.review_count;
+    //         if (yelp.price) enrichment.price = yelp.price;
+    //         if (!enrichment.phone && yelp.phone) enrichment.phone = yelp.phone;
+    //         if (!enrichment.website && yelp.url) enrichment.website = yelp.url;
+    //         updatePopup();
+    //     }
+    // }).catch(e => console.warn('[Yelp enrichment]', e));
+
+    // Final update when Overpass settles (removes "Loading..." if nothing found)
+    overpassPromise.finally(() => updatePopup());
+}
+
+/**
+ * Fetch OSM tags for a geocoded location via Overpass.
+ * Uses osm_type/osm_id if available (precise), otherwise spatial query.
+ */
+async function _fetchOverpassTags(result, lat, lon) {
+    let query;
+    const osmType = result.osm_type;
+    const osmId = result.osm_id;
+
+    if (osmType && osmId) {
+        // Precise lookup by OSM element
+        const typeMap = { node: 'node', way: 'way', relation: 'relation',
+                          N: 'node', W: 'way', R: 'relation' };
+        const t = typeMap[osmType] || typeMap[osmType?.charAt(0)?.toUpperCase()];
+        if (t) {
+            query = `[out:json][timeout:5];${t}(${osmId});out tags;`;
+        }
+    }
+    if (!query) {
+        // Spatial fallback — find nearest named POI within 100m
+        query = `[out:json][timeout:5];(node(around:100,${lat},${lon})["name"];way(around:100,${lat},${lon})["name"];);out tags 1;`;
+    }
+
+    const response = await fetch(OVERPASS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `data=${encodeURIComponent(query)}`
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const elements = data.elements;
+    if (!elements || elements.length === 0) return null;
+    return elements[0].tags || null;
+}
+
+/**
+ * Fetch Yelp rating for a location via the Cloudflare Worker proxy.
+ * Returns { rating, review_count, price, phone, url } or null.
+ */
+async function _fetchYelpRating(name, lat, lon, address) {
+    if (typeof LASO_PROXY_URL === 'undefined' || !LASO_PROXY_URL) return null;
+    try {
+        const params = new URLSearchParams({
+            term: name,
+            latitude: lat.toFixed(6),
+            longitude: lon.toFixed(6)
+        });
+        const response = await fetch(`${LASO_PROXY_URL}/yelp?${params.toString()}`, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' }
+        });
+        if (!response.ok) {
+            if (response.status === 429) console.warn('[Yelp] Daily limit reached');
+            return null;
+        }
+        return await response.json();
+    } catch (e) {
+        console.warn('[Yelp fetch]', e);
+        return null;
+    }
 }
 
 // =============================================================================
@@ -4479,6 +5201,33 @@ function setupEventListeners() {
             searchAddress();
         }
     });
+
+    // Search clear (X) button — clears input text and removes location pin
+    const searchClearBtn = document.getElementById('search-clear-btn');
+    const addressInput = document.getElementById('address-input');
+    const searchContainer = document.querySelector('.search-container');
+
+    const updateSearchClearVisibility = () => {
+        const hasText = addressInput.value.trim().length > 0;
+        searchClearBtn.classList.toggle('visible', hasText);
+        searchContainer.classList.toggle('has-clear', hasText);
+    };
+
+    addressInput.addEventListener('input', updateSearchClearVisibility);
+
+    searchClearBtn.addEventListener('click', () => {
+        addressInput.value = '';
+        addressInput.blur();
+        searchClearBtn.classList.remove('visible');
+        searchContainer.classList.remove('has-clear');
+
+        // Clear the cached search string so a fresh search can run,
+        // but keep the red pin on the map — user may still want it visible.
+        _lastSearchedAddress = null;
+    });
+
+    // Initialize visibility on load (e.g. if browser auto-fills the input)
+    updateSearchClearVisibility();
 
     // Sidebar close
     document.getElementById('close-sidebar').addEventListener('click', closeSidebar);
@@ -4670,7 +5419,7 @@ function setupEventListeners() {
 function setupMobileTouchContinuity() {
     if (!isMobileView()) return;
 
-    const PRESSABLE_SEL = '.header-actions > .btn, .header-actions > .draw-btn-wrapper > .btn, .search-btn, .filter-sort-controls #clear-filters-btn, .header > .settings-btn';
+    const PRESSABLE_SEL = '.header-actions > .btn, .header-actions > .draw-btn-wrapper > .btn, .search-btn, .search-clear-btn, .filter-sort-controls #clear-filters-btn, .header > .settings-btn';
     let pressableButtons = Array.from(document.querySelectorAll(PRESSABLE_SEL));
     let currentPressedButton = null;
     let startButton = null;
@@ -4796,6 +5545,13 @@ function clearAll() {
     }
     _lastSearchedAddress = null;
     updateZoomFitButtonState();
+
+    // Clear address input and hide X button
+    const addrInput = document.getElementById('address-input');
+    if (addrInput) {
+        addrInput.value = '';
+        addrInput.dispatchEvent(new Event('input', { bubbles: true }));
+    }
 
     // ── 2. Remove all tracked markers BEFORE map.stop() so that any
     //       synchronously-fired moveend handlers see hasLayer() === false.
@@ -6144,6 +6900,69 @@ function _getAppleFallbackUrl(destLat, destLng, name) {
     return `https://maps.apple.com/?q=${encodeURIComponent(name || '')}&ll=${destLat},${destLng}&z=19`;
 }
 
+/**
+ * Check whether the clicked destination is effectively the same place as
+ * the red search pin (directionLocations.B).  Returns true when D ≈ B,
+ * meaning the B waypoint would be redundant in a multi-stop route.
+ *
+ * Also returns true if a selected green pin exists but its address matches
+ * the red pin (mega-pin duplicate) — that green pin doesn't count as a
+ * separate stop.
+ */
+function _isDestSameAsSearchPin(destLat, destLng) {
+    if (!searchAddressMarker || !map.hasLayer(searchAddressMarker)) return false;
+    const locB = directionLocations.B;
+    if (!locB) return false;
+
+    // Check dest against ALL known coords for the search pin:
+    //   1. directionLocations.B (Nominatim)
+    //   2. marker's actual position
+    //   3. mega pin place's Google Places coords
+    const THRESH = 0.0005; // ~50 m
+    const candidates = [
+        { lat: locB.lat, lng: locB.lng }
+    ];
+    const markerLL = searchAddressMarker.getLatLng();
+    candidates.push({ lat: markerLL.lat, lng: markerLL.lng });
+    const enrichment = searchAddressMarker._searchEnrichment;
+    if (enrichment && enrichment._megaPinPlace && enrichment._megaPinPlace.coordinates) {
+        candidates.push({ lat: enrichment._megaPinPlace.coordinates[0], lng: enrichment._megaPinPlace.coordinates[1] });
+    }
+    const coordMatch = candidates.some(c =>
+        Math.abs(destLat - c.lat) < THRESH && Math.abs(destLng - c.lng) < THRESH
+    );
+
+    const searchAddr = _normName(searchAddressMarker._searchAddress || locB.label || '');
+
+    if (!coordMatch && !searchAddr) return false;
+
+    // If coords match, check whether a selected green pin is a genuinely
+    // DIFFERENT place (not the mega-pin duplicate).
+    if (coordMatch) {
+        // Check if there's a highlighted green pin that is NOT the same place
+        if (_highlightedMarkerIndex !== null && _highlightedMarkerIndex !== undefined) {
+            const greenPlace = allSearchResults[_highlightedMarkerIndex];
+            if (greenPlace) {
+                const greenAddr = _normName(greenPlace.address || '');
+                const greenName = _normName(greenPlace.name || '');
+                const pinName = _normName(searchAddressMarker._searchName || '');
+                // If green pin has a different name AND address, it's a real separate stop
+                const sameAsPin = (greenName && pinName && (greenName.includes(pinName) || pinName.includes(greenName)))
+                    || (greenAddr && searchAddr && (greenAddr.includes(searchAddr) || searchAddr.includes(greenAddr)));
+                if (!sameAsPin) {
+                    console.log(`[Directions] Green pin #${_highlightedMarkerIndex} "${greenPlace.name}" is a different place — allowing multi-stop`);
+                    return false;
+                }
+                console.log(`[Directions] Green pin #${_highlightedMarkerIndex} "${greenPlace.name}" matches search pin — treating as same`);
+            }
+        }
+        console.log(`[Directions] Destination matches search pin (B) — using simple A→D`);
+        return true;
+    }
+
+    return false;
+}
+
 // ── Direction Mode: click event delegation ──
 // Intercepts clicks on .directions-capable links at click-time so the toggle
 // takes effect immediately without re-rendering cards or popups.
@@ -6164,21 +6983,45 @@ document.addEventListener('click', function(e) {
     let url;
     const provider = link.dataset.mapProvider;
 
-    const effectiveOrder = getEffectiveDirectionOrder();
-    if (effectiveOrder.length >= 2) {
-        url = buildMultiStopUrl(
-            provider,
-            destLat, destLng,
-            link.dataset.destName || '',
-            link.dataset.searchTerm || '',
-            effectiveOrder
-        );
-    } else {
-        // Fallback: simple origin→destination mode
-        if (provider === 'google') {
-            url = getGoogleDirectionsUrl(destLat, destLng, link.dataset.searchTerm || '');
-        } else if (provider === 'apple') {
-            url = getAppleDirectionsUrl(destLat, destLng, link.dataset.destName || '');
+    // ── Special case: red search pin ──
+    // When D (clicked destination) ≈ B (searched address), the B waypoint
+    // in the multi-stop route is redundant (same place).  Use simple
+    // current-location → destination instead.  Only allow multi-stop if
+    // a DIFFERENT green pin is meaningfully involved.
+    const destIsSearchPin = _isDestSameAsSearchPin(parseFloat(destLat), parseFloat(destLng));
+
+    if (destIsSearchPin) {
+        // Simple 2-stop: user's current location (A) → destination
+        const userLoc = directionLocations.A || (window._userLatLng
+            ? { lat: window._userLatLng[0], lng: window._userLatLng[1] }
+            : null);
+        if (userLoc) {
+            if (provider === 'google') {
+                url = `https://www.google.com/maps/dir/?api=1&origin=${userLoc.lat},${userLoc.lng}&destination=${destLat},${destLng}&travelmode=driving`;
+            } else if (provider === 'apple') {
+                url = `https://maps.apple.com/?saddr=${userLoc.lat},${userLoc.lng}&daddr=${destLat},${destLng}&dirflg=d`;
+            }
+            console.log(`[Directions] Search pin special case: simple A→D (${provider})`);
+        }
+    }
+
+    if (!url) {
+        const effectiveOrder = getEffectiveDirectionOrder();
+        if (effectiveOrder.length >= 2) {
+            url = buildMultiStopUrl(
+                provider,
+                destLat, destLng,
+                link.dataset.destName || '',
+                link.dataset.searchTerm || '',
+                effectiveOrder
+            );
+        } else {
+            // Fallback: simple origin→destination mode
+            if (provider === 'google') {
+                url = getGoogleDirectionsUrl(destLat, destLng, link.dataset.searchTerm || '');
+            } else if (provider === 'apple') {
+                url = getAppleDirectionsUrl(destLat, destLng, link.dataset.destName || '');
+            }
         }
     }
 

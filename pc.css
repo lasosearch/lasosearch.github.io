@@ -219,6 +219,19 @@ body:not(.is-mobile) .header > .settings-btn {
     width: var(--pc-btn-height, 44px);
     height: var(--pc-btn-height, 44px);
     font-size: 16px;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Search-box clear button on desktop — matches arrow button size inside the bar */
+body:not(.is-mobile) .search-box .search-clear-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    box-sizing: border-box;
+    flex-shrink: 0;
+    border: none;
+    margin-right: 6px;
 }
 
 /* Hide filter-sort-controls in header on desktop (JS moves them into sidebar) */
