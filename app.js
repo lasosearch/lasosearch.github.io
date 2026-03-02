@@ -32,6 +32,7 @@ let _buttonZoomPending = false;   // transient flag set by +/- button handlers b
 let isFitZoom = false;
 let _isAtMyLocation = false;       // true after My Location fly completes
 let _myLocationCenter = null;      // stored center for drift detection
+let _myLocEpoch = 0;              // epoch counter — bumped on each My Location fly, invalidates orphaned moveend handlers
 let isLocationSearchZoom = false;  // true during location/search zoom animations
 let fitZoomValue = null;   // absolute fractional zoom for current polygon fit
 let drawingZoom = null;    // integer zoom at which the polygon was drawn
@@ -402,6 +403,8 @@ function applyPolygonFit(fitState) {
     // Skip if we're already at this exact fit state
     if (isFitZoom && activeFitState === fitState) return;
     map.stop();                        // cancel any in-progress fly animation
+    // Invalidate any orphaned My Location moveend handlers
+    if (isLocationSearchZoom) { _myLocEpoch++; isLocationSearchZoom = false; }
     isAutoFittingPolygon = true;
     activeFitState = fitState;
     map.flyTo(fitState.center, fitState.zoom, { duration: 0.5 });
@@ -533,9 +536,12 @@ function initMap() {
                 container.classList.add('tooltip-dismissed');
 
                 // Flying away from GPS location — re-enable My Location button
-                if (_isAtMyLocation) {
+                // and invalidate any orphaned My Location moveend handlers
+                if (_isAtMyLocation || isLocationSearchZoom) {
+                    _myLocEpoch++;
                     _isAtMyLocation = false;
                     _myLocationCenter = null;
+                    isLocationSearchZoom = false;
                     updateMyLocationButtonState();
                 }
 
@@ -615,10 +621,53 @@ function initMap() {
             btn.setAttribute('aria-label', 'My location');
 
             L.DomEvent.disableClickPropagation(container);
+
+            // Shared logic: fly to a known location
+            const _flyToMyLocation = (loc) => {
+                const epoch = ++_myLocEpoch;
+                container.classList.remove('locating');
+                saveLocation(loc[0], loc[1]);
+                window._userLatLng = loc;
+                directionLocations.A = { lat: loc[0], lng: loc[1], label: 'Your location' };
+                isLocationSearchZoom = true;
+                const targetZoom = 14 + (isMobileView() ? 2 : 3);
+                map.flyTo(loc, targetZoom, { duration: 0.8 });
+                const finalize = () => {
+                    if (_myLocEpoch !== epoch) return; // interrupted by another action
+                    _isAtMyLocation = true;
+                    _myLocationCenter = map.getCenter();
+                    updateMyLocationButtonState();
+                    updateZoomLevelIndicator();
+                    updateDrawButtonState();
+                    updateStatus('Location found');
+                };
+                map.once('moveend', () => {
+                    if (_myLocEpoch !== epoch) { isLocationSearchZoom = false; return; }
+                    isLocationSearchZoom = false;
+                    if (_panToAvailableCanvas(loc)) {
+                        map.once('moveend', () => {
+                            if (_myLocEpoch !== epoch) return;
+                            finalize();
+                        });
+                    } else {
+                        finalize();
+                    }
+                });
+            };
+
             L.DomEvent.on(btn, 'click', (e) => {
                 L.DomEvent.preventDefault(e);
                 if (container.classList.contains('locating')) return;
                 if (_isAtMyLocation) return;  // already centered on location
+
+                // Fast path: watchPosition already has a recent GPS fix — use it
+                // instantly (no blue flash, no async delay).
+                if (window._userLatLng) {
+                    _flyToMyLocation(window._userLatLng);
+                    return;
+                }
+
+                // Slow path: no cached GPS — request a fresh fix
                 if (!navigator.geolocation) {
                     updateStatus('Geolocation not supported');
                     return;
@@ -626,30 +675,7 @@ function initMap() {
                 container.classList.add('locating');
                 navigator.geolocation.getCurrentPosition(
                     (position) => {
-                        container.classList.remove('locating');
-                        const loc = [position.coords.latitude, position.coords.longitude];
-                        saveLocation(loc[0], loc[1]);
-                        window._userLatLng = loc;
-                        directionLocations.A = { lat: loc[0], lng: loc[1], label: 'Your location' };
-                        isLocationSearchZoom = true;
-                        const targetZoom = 14 + (isMobileView() ? 2 : 3);
-                        map.flyTo(loc, targetZoom, { duration: 0.8 });
-                        const finalize = () => {
-                            _isAtMyLocation = true;
-                            _myLocationCenter = map.getCenter();
-                            updateMyLocationButtonState();
-                            updateZoomLevelIndicator();
-                            updateDrawButtonState();
-                            updateStatus('Location found');
-                        };
-                        map.once('moveend', () => {
-                            isLocationSearchZoom = false;
-                            if (_panToAvailableCanvas(loc)) {
-                                map.once('moveend', finalize);
-                            } else {
-                                finalize();
-                            }
-                        });
+                        _flyToMyLocation([position.coords.latitude, position.coords.longitude]);
                     },
                     () => {
                         container.classList.remove('locating');
@@ -5537,6 +5563,11 @@ function clearAll() {
     _highlightedMarkerIndex = null;
     searchPinCoords = null;
     isAutoFittingPolygon = false;
+    // Invalidate any orphaned My Location moveend handlers
+    _myLocEpoch++;
+    _isAtMyLocation = false;
+    _myLocationCenter = null;
+    isLocationSearchZoom = false;
 
     // Remove persistent search address marker
     if (searchAddressMarker) {
