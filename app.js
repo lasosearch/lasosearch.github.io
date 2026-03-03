@@ -2238,6 +2238,21 @@ function applyFiltersAndSort({ resetToFirstPage = true } = {}) {
         derived = derived.filter(place => placeMatchesAnyToken(place, tokens));
     }
 
+    // ── Force-include the mega-pin matched place ──
+    // The searched location's draw-search counterpart must always survive
+    // filtering so the red pin stays enriched and clickable.  Without this,
+    // changing filters can silently remove the mega-pin place from the list,
+    // causing stale-index bugs where a *different* blue marker gets suppressed.
+    if (hasFilter && searchAddressMarker && map.hasLayer(searchAddressMarker)) {
+        const enr = searchAddressMarker._searchEnrichment;
+        if (enr && enr._megaPin && enr._megaPinPlace) {
+            if (!derived.includes(enr._megaPinPlace)) {
+                derived.push(enr._megaPinPlace);
+                console.log(`[Mega pin] Force-included "${enr._megaPinPlace.name}" in filtered results`);
+            }
+        }
+    }
+
     // When a text filter is active, stamp each result with a relevance tier
     // so we can sort by tier first, then by the user's chosen sort mode
     // within each tier.  This is the Google Maps approach: an exact name
@@ -3573,15 +3588,16 @@ function updateAllMarkers() {
     });
     markers = markers.filter(m => m.isDrawingPoint);
 
-    // ── Detect which draw-search index is the mega-pin duplicate ──
+    // ── Detect which draw-search place is the mega-pin duplicate ──
     // If the red search pin exists and has a mega-pin match, we suppress
-    // the blue marker for that index (the red pin already shows its data).
-    let suppressIndex = -1;
+    // the blue marker for that place (the red pin already shows its data).
+    // Compare by object reference (immune to stale-index bugs).
+    let suppressPlace = null;
     if (searchAddressMarker && map.hasLayer(searchAddressMarker)) {
         const enrichment = searchAddressMarker._searchEnrichment;
-        if (enrichment && enrichment._megaPin && enrichment._megaPinIndex >= 0) {
-            suppressIndex = enrichment._megaPinIndex;
-            console.log(`[Mega pin] Suppressing blue marker for index ${suppressIndex} ("${enrichment._megaPinPlace?.name}") — red pin covers it`);
+        if (enrichment && enrichment._megaPin && enrichment._megaPinPlace) {
+            suppressPlace = enrichment._megaPinPlace;
+            console.log(`[Mega pin] Suppressing blue marker for "${suppressPlace.name}" — red pin covers it`);
         }
     }
 
@@ -3590,7 +3606,7 @@ function updateAllMarkers() {
         if (!place.coordinates) return;
 
         // Skip creating blue marker if this place is already represented by the red search pin
-        if (index === suppressIndex) {
+        if (place === suppressPlace) {
             console.log(`[Mega pin] Skipped blue marker #${index}: "${place.name}" (duplicate of red search pin)`);
             return;
         }
@@ -3879,10 +3895,11 @@ function highlightPlace(index) {
             // Revert any previous green marker, then highlight the new one
             clearHighlightedMarker();
             let marker = markers.find(m => m.placeIndex === index);
-            // If no blue marker (suppressed mega pin), use the red search pin
+            // If no blue marker (suppressed mega pin), use the red search pin.
+            // Compare by object reference — immune to stale-index bugs.
+            const megaPlace = searchAddressMarker?._searchEnrichment?._megaPinPlace;
             const isMegaPinFallback = !marker && searchAddressMarker
-                && searchAddressMarker._searchEnrichment
-                && searchAddressMarker._searchEnrichment._megaPinIndex === index;
+                && megaPlace && allSearchResults[index] === megaPlace;
             if (isMegaPinFallback) marker = searchAddressMarker;
 
             if (marker) {
@@ -4888,10 +4905,16 @@ function _normName(s) {
  * normalized NAME and/or ADDRESS.  Distance alone is unreliable because
  * different geocoding backends (Nominatim vs Google Places) can place the
  * same business hundreds of meters apart.  Name + address is the reliable
- * signal.  Store the full place + index so callers can use buildPopupContent.
+ * signal.  Stores the matched place by *object reference* — the dynamic
+ * index into allSearchResults is recomputed by _refreshMegaPin on every
+ * filter/sort cycle so it never goes stale.
  */
 function _mergeDrawSearchMatch(lat, lon, enrichment, searchName, searchAddress) {
-    if (!allSearchResults || allSearchResults.length === 0) {
+    // Always search the UNFILTERED results so the mega-pin match survives
+    // filter changes.  The current index in allSearchResults is computed
+    // dynamically by _refreshMegaPin / _getMegaPinCurrentIndex.
+    const pool = unfilteredSearchResults;
+    if (!pool || pool.length === 0) {
         console.log('[Mega pin] No draw-search results to match against');
         return;
     }
@@ -4908,8 +4931,8 @@ function _mergeDrawSearchMatch(lat, lon, enrichment, searchName, searchAddress) 
     console.log(`[Mega pin] Looking for match — name="${searchName}" (norm="${normSearchName}"), addr norm="${normSearchAddr}"`);
 
     let bestPlace = null, bestIndex = -1, bestScore = 0;
-    for (let i = 0; i < allSearchResults.length; i++) {
-        const place = allSearchResults[i];
+    for (let i = 0; i < pool.length; i++) {
+        const place = pool[i];
         if (!place.coordinates) continue;
 
         const normPlaceName = _normName(place.name);
@@ -4953,30 +4976,65 @@ function _mergeDrawSearchMatch(lat, lon, enrichment, searchName, searchAddress) 
 
     enrichment._megaPin = true;
     enrichment._megaPinPlace = bestPlace;
-    enrichment._megaPinIndex = bestIndex;
+    // Index is resolved dynamically against allSearchResults (the filtered/
+    // sorted list) by _refreshMegaPin — never store a stale fixed index.
+    enrichment._megaPinIndex = -1;
 }
 
 /**
  * Re-enrich an existing search pin when draw-search results arrive later.
  * Called from the sort/display pipeline after allSearchResults is populated.
+ *
+ * Two modes:
+ *   1. Match already found (_megaPin === true) → just recompute the dynamic
+ *      index into the *current* allSearchResults (which changes on every
+ *      filter/sort) and refresh the popup.
+ *   2. No match yet → run the full _mergeDrawSearchMatch against the
+ *      unfiltered pool.
  */
 function _refreshMegaPin() {
     if (!searchAddressMarker || !map.hasLayer(searchAddressMarker)) return;
-    const ll = searchAddressMarker.getLatLng();
-    // Use the enrichment object stored on the marker (set by _enrichSearchedLocation)
     const enrichment = searchAddressMarker._searchEnrichment;
     if (!enrichment) return;
-    if (enrichment._megaPin) return; // already enriched — don't overwrite
+
+    if (enrichment._megaPin && enrichment._megaPinPlace) {
+        // ── Mode 1: match already found — recompute dynamic index ──
+        const idx = allSearchResults.indexOf(enrichment._megaPinPlace);
+        enrichment._megaPinIndex = idx;
+        if (idx >= 0) {
+            const wasOpen = searchAddressMarker.isPopupOpen();
+            searchAddressMarker.setPopupContent(
+                buildPopupContent(enrichment._megaPinPlace, idx, false)
+            );
+            if (wasOpen) searchAddressMarker.openPopup();
+        }
+        console.log(`[Mega pin] Refreshed index → ${idx} ("${enrichment._megaPinPlace.name}")`);
+        return;
+    }
+
+    // ── Mode 2: no match yet — try full matching ──
+    const ll = searchAddressMarker.getLatLng();
     const name = searchAddressMarker._searchName || '';
     const address = searchAddressMarker._searchAddress || '';
     _mergeDrawSearchMatch(ll.lat, ll.lng, enrichment, name, address);
     if (enrichment._megaPin && enrichment._megaPinPlace) {
-        const wasOpen = searchAddressMarker.isPopupOpen();
-        searchAddressMarker.setPopupContent(
-            buildPopupContent(enrichment._megaPinPlace, enrichment._megaPinIndex, false)
-        );
-        if (wasOpen) searchAddressMarker.openPopup();
-        console.log('[Mega pin] Refreshed search pin with full draw-search popup');
+        let idx = allSearchResults.indexOf(enrichment._megaPinPlace);
+        // If the matched place was filtered out (e.g. first draw search with
+        // active filters), force-include it so the red pin stays enriched.
+        if (idx < 0) {
+            allSearchResults.push(enrichment._megaPinPlace);
+            idx = allSearchResults.length - 1;
+            console.log(`[Mega pin] Force-included "${enrichment._megaPinPlace.name}" (was filtered out on first match)`);
+        }
+        enrichment._megaPinIndex = idx;
+        if (idx >= 0) {
+            const wasOpen = searchAddressMarker.isPopupOpen();
+            searchAddressMarker.setPopupContent(
+                buildPopupContent(enrichment._megaPinPlace, idx, false)
+            );
+            if (wasOpen) searchAddressMarker.openPopup();
+        }
+        console.log(`[Mega pin] New match — index ${idx} ("${enrichment._megaPinPlace.name}")`);
     }
 }
 
@@ -5006,11 +5064,15 @@ async function _enrichSearchedLocation(result, marker, searchQuery, displayAddre
     // If mega pin matched, use the FULL draw-search popup immediately
     // and remove the duplicate blue marker if it's already on the map.
     if (enrichment._megaPin && enrichment._megaPinPlace) {
+        // Compute current index dynamically (may be -1 if not yet in allSearchResults)
+        const idx = allSearchResults.indexOf(enrichment._megaPinPlace);
+        enrichment._megaPinIndex = idx;
         const wasOpen = marker.isPopupOpen();
-        marker.setPopupContent(buildPopupContent(enrichment._megaPinPlace, enrichment._megaPinIndex, false));
-        if (wasOpen) marker.openPopup();
-        // Remove existing blue duplicate marker
-        _removeDuplicateBlueMarker(enrichment._megaPinIndex);
+        if (idx >= 0) {
+            marker.setPopupContent(buildPopupContent(enrichment._megaPinPlace, idx, false));
+            if (wasOpen) marker.openPopup();
+            _removeDuplicateBlueMarker(idx);
+        }
     }
     // Otherwise if we have partial data, update with compact popup (removes "Loading…")
     else if (enrichment.hours || enrichment.phone || enrichment.website) {
@@ -5032,7 +5094,12 @@ async function _enrichSearchedLocation(result, marker, searchQuery, displayAddre
         const wasOpen = marker.isPopupOpen();
         // If mega pin matched, always use the full draw-search popup
         if (enrichment._megaPin && enrichment._megaPinPlace) {
-            marker.setPopupContent(buildPopupContent(enrichment._megaPinPlace, enrichment._megaPinIndex, false));
+            // Recompute dynamic index — it changes on every filter/sort
+            const curIdx = allSearchResults.indexOf(enrichment._megaPinPlace);
+            enrichment._megaPinIndex = curIdx;
+            if (curIdx >= 0) {
+                marker.setPopupContent(buildPopupContent(enrichment._megaPinPlace, curIdx, false));
+            }
         } else {
             marker.setPopupContent(_buildSearchPinPopup(name, displayAddress, lat, lon, enrichment));
         }
