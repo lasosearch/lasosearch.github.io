@@ -628,6 +628,15 @@ body {
 }
 
 /* =============================================================================
+   FOUC Prevention — suppress transitions during initial page load
+   ============================================================================= */
+
+body.preload * {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+}
+
+/* =============================================================================
    Sidebar Common
    ============================================================================= */
 
@@ -1151,7 +1160,7 @@ body {
     background: var(--bg-primary);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);
-    width: 340px;
+    width: 380px;
     max-width: calc(100vw - 32px);
     max-height: calc(100vh - 64px);
     overflow-y: auto;
@@ -1440,7 +1449,12 @@ body.overlay-active .direction-advanced-panel {
     color: #fff;
 }
 
-.sub-mode-btn:not(.active):hover {
+.sub-mode-btn.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.sub-mode-btn:not(.active):not(.disabled):hover {
     background: var(--bg-tertiary);
 }
 
@@ -1448,15 +1462,18 @@ body.overlay-active .direction-advanced-panel {
     position: relative;
     margin: 12px 0 0;
     width: 100%;
+    /* Reserve space for 4-stop display so panel height stays consistent */
+    min-height: 180px;
+    /* Vertically center pills when fewer stops don't fill the space */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }
 
 .sub-mode-row {
-    padding: 2px 0;
+    padding: 7px 0;
+    text-align: left;
 }
-
-.sub-mode-row:nth-of-type(1) { text-align: left; }
-.sub-mode-row:nth-of-type(2) { text-align: center; }
-.sub-mode-row:nth-of-type(3) { text-align: right; }
 
 .sub-mode-pill {
     display: inline-block;
@@ -1532,7 +1549,7 @@ body.overlay-active .direction-advanced-panel {
     background: var(--bg-primary);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);
-    width: 340px;
+    width: 380px;
     max-width: calc(100vw - 32px);
     max-height: calc(100vh - 64px);
     overflow-y: auto;

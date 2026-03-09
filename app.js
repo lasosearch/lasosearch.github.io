@@ -1255,6 +1255,14 @@ function setupDesktopLayout() {
 
 // Initialize on DOM ready
 document.addEventListener('DOMContentLoaded', () => {
+    // Remove preload class after first paint so transitions activate normally.
+    // Double-rAF ensures CSS is fully applied before enabling transitions.
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            document.body.classList.remove('preload');
+        });
+    });
+
     // Detect touch device and apply mobile class
     if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
         document.body.classList.add('is-mobile');
@@ -1326,6 +1334,15 @@ function drawClear() {
     selectedPlaceIndex = null;
     _highlightedMarkerIndex = null;
     isAutoFittingPolygon = false;
+
+    // Reset mega-pin enrichment — the draw-search results are being wiped,
+    // so the red pin's link to its draw-search counterpart must be severed.
+    if (searchAddressMarker && searchAddressMarker._searchEnrichment) {
+        const enr = searchAddressMarker._searchEnrichment;
+        enr._megaPin = false;
+        enr._megaPinPlace = null;
+        enr._megaPinIndex = -1;
+    }
 
     // Remove business markers (NOT searchAddressMarker)
     markers.forEach(marker => {
@@ -2498,6 +2515,16 @@ async function performLasoSearch() {
     isSearching = true;
     currentSearchOffset = 0;
 
+    // Reset mega-pin enrichment so stale matches from a prior draw search
+    // don't leak into the new results via the force-include path.
+    // _refreshMegaPin will re-match against the fresh results.
+    if (searchAddressMarker && searchAddressMarker._searchEnrichment) {
+        const enr = searchAddressMarker._searchEnrichment;
+        enr._megaPin = false;
+        enr._megaPinPlace = null;
+        enr._megaPinIndex = -1;
+    }
+
     // Capture map center as the origin for Direction Mode
     const center = map.getCenter();
     drawSearchOrigin = [center.lat, center.lng];
@@ -2724,8 +2751,11 @@ function polygonToBoundingCircle(polygonPoints) {
         if (dist > maxRadius) maxRadius = dist;
     }
 
-    // Add 10% padding, cap at 50 km (Google's max)
-    const radius = Math.min(maxRadius * 1.1, 50000);
+    // Cap at 50 km (Google's max).  No padding — the circle already
+    // contains the entire polygon (all vertices within maxRadius).
+    // Padding would only waste API result slots on places outside the
+    // polygon that get filtered out anyway.
+    const radius = Math.min(maxRadius, 50000);
 
     return {
         center: { latitude: center[0], longitude: center[1] },
@@ -3580,15 +3610,42 @@ function panToMarkerInView(marker) {
 }
 
 function updateAllMarkers() {
-    // Clear existing business markers (keep drawing points if any)
+    // ── 1. Close any open popup FIRST so it can't linger as a detached layer ──
+    _isChangingSelection = true;
+    map.closePopup();
+    _isChangingSelection = false;
+
+    // ── 2. Remove all tracked business markers ──
     markers.forEach(marker => {
         if (!marker.isDrawingPoint) {
-            map.removeLayer(marker);
+            if (map.hasLayer(marker)) map.removeLayer(marker);
         }
     });
     markers = markers.filter(m => m.isDrawingPoint);
 
-    // ── Detect which draw-search place is the mega-pin duplicate ──
+    // ── 3. Stray-layer sweep — catch any markers/popups that leaked outside
+    //       the tracked `markers` array (e.g. from race conditions, mega-pin
+    //       duplication, or async enrichment callbacks).  Preserve only the
+    //       red search pin, drawing-point markers, tile layers, and controls.
+    const strayLayers = [];
+    map.eachLayer(layer => {
+        if (layer === searchAddressMarker) return;          // keep red pin
+        if (layer instanceof L.TileLayer) return;           // keep tiles
+        if (markers.includes(layer)) return;                // keep tracked drawing points
+        if (layer instanceof L.Polygon || layer instanceof L.Polyline) return; // keep polygon
+        if (layer instanceof L.Marker || layer instanceof L.Popup) {
+            strayLayers.push(layer);
+        }
+    });
+    if (strayLayers.length > 0) {
+        console.warn(`[updateAllMarkers] Swept ${strayLayers.length} stray layer(s)`);
+        strayLayers.forEach(layer => map.removeLayer(layer));
+    }
+
+    // Reset highlight state — the old highlighted marker no longer exists
+    _highlightedMarkerIndex = null;
+
+    // ── 4. Detect which draw-search place is the mega-pin duplicate ──
     // If the red search pin exists and has a mega-pin match, we suppress
     // the blue marker for that place (the red pin already shows its data).
     // Compare by object reference (immune to stale-index bugs).
@@ -6447,14 +6504,23 @@ function updateStatus(text, isSearching = false) {
 
 (function initSettings() {
     // ── Restore persisted state ──
+    // _advancedSaved tracks whether the user has EVER saved an advanced
+    // configuration.  It stays true even when switching to pre/post-game
+    // so the Advanced shortcut button remains enabled.
+    let _advancedSaved = false;
     try {
         directionModeEnabled = localStorage.getItem('laso_direction_mode') === 'true';
+        _advancedSaved = localStorage.getItem('laso_advanced_saved') === 'true';
         const savedSubMode = localStorage.getItem('laso_direction_sub_mode');
-        if (savedSubMode === 'pre-game' || savedSubMode === 'post-game') {
+        if (savedSubMode === 'pre-game' || savedSubMode === 'post-game' || savedSubMode === 'advanced') {
             directionSubMode = savedSubMode;
         }
-        useAdvancedOrder = localStorage.getItem('laso_use_advanced_order') === 'true';
-        if (useAdvancedOrder) {
+        // If advanced sub-mode is active but no saved config exists, fall back
+        if (directionSubMode === 'advanced' && !_advancedSaved) {
+            directionSubMode = 'pre-game';
+        }
+        useAdvancedOrder = directionSubMode === 'advanced';
+        if (useAdvancedOrder || _advancedSaved) {
             const savedOrder = localStorage.getItem('laso_direction_order');
             if (savedOrder) {
                 const parsed = JSON.parse(savedOrder);
@@ -6462,8 +6528,9 @@ function updateStatus(text, isSearching = false) {
                     directionOrder = parsed;
                 }
             }
-        } else {
-            // Reset to sub-mode default — prevents stale/duplicate orders from localStorage
+        }
+        if (!useAdvancedOrder) {
+            // Runtime order follows the active preset
             directionOrder = directionSubMode === 'post-game' ? ['A', 'B', 'D'] : ['A', 'D', 'B'];
         }
     } catch (e) { /* localStorage unavailable */ }
@@ -6489,7 +6556,16 @@ function updateStatus(text, isSearching = false) {
     const subModeWrap      = document.getElementById('direction-sub-mode');
     const subModePreBtn    = document.getElementById('sub-mode-pre');
     const subModePostBtn   = document.getElementById('sub-mode-post');
+    const subModeAdvBtn    = document.getElementById('sub-mode-advanced');
     const subModeDesc      = document.getElementById('sub-mode-desc');
+
+    // Letter metadata for pill display
+    const LETTER_META = {
+        A: { label: 'Current location',  bg: '#ea4335', fg: '#fff' },
+        B: { label: 'Searched place',    bg: '#fbbc04', fg: '#333' },
+        C: { label: 'Map center',        bg: '#34a853', fg: '#fff' },
+        D: { label: 'Selected place',    bg: '#4285f4', fg: '#fff' }
+    };
 
     if (toggle) toggle.checked = directionModeEnabled;
 
@@ -6510,25 +6586,46 @@ function updateStatus(text, isSearching = false) {
             if (infoBtn) infoBtn.classList.remove('active');
         }
     }
+    function _syncAdvancedBtnState() {
+        if (!subModeAdvBtn) return;
+        if (_advancedSaved) {
+            subModeAdvBtn.disabled = false;
+            subModeAdvBtn.classList.remove('disabled');
+        } else {
+            subModeAdvBtn.disabled = true;
+            subModeAdvBtn.classList.add('disabled');
+        }
+    }
+
     function syncSubModeUI() {
         if (subModePreBtn)  subModePreBtn.classList.toggle('active', directionSubMode === 'pre-game');
         if (subModePostBtn) subModePostBtn.classList.toggle('active', directionSubMode === 'post-game');
+        if (subModeAdvBtn)  subModeAdvBtn.classList.toggle('active', directionSubMode === 'advanced');
+        _syncAdvancedBtnState();
+
         if (subModeDesc) {
-            const stops = directionSubMode === 'post-game'
-                ? [{label:'Current location',bg:'#ea4335',fg:'#fff'}, {label:'Searched place',bg:'#fbbc04',fg:'#333'}, {label:'Selected place',bg:'#4285f4',fg:'#fff'}]
-                : [{label:'Current location',bg:'#ea4335',fg:'#fff'}, {label:'Selected place',bg:'#4285f4',fg:'#fff'}, {label:'Searched place',bg:'#fbbc04',fg:'#333'}];
-            subModeDesc.innerHTML =
-                stops.map(s => `<div class="sub-mode-row"><span class="sub-mode-pill" style="background:${s.bg};color:${s.fg};border-color:${s.bg};">${s.label}</span></div>`).join('') +
-                `<svg class="sub-mode-svg" xmlns="http://www.w3.org/2000/svg">
-                    <line class="sub-mode-connector"/>
-                    <line class="sub-mode-connector"/>
-                    <line class="sub-mode-connector"/>
-                    <line class="sub-mode-connector"/>
-                    <polygon class="sub-mode-arrowhead"/>
-                    <polygon class="sub-mode-arrowhead"/>
-                    <polygon class="sub-mode-arrowhead"/>
-                    <polygon class="sub-mode-arrowhead"/>
-                </svg>`;
+            // Build stops from active mode
+            let stops;
+            if (directionSubMode === 'advanced' && useAdvancedOrder && directionOrder.length >= 2) {
+                stops = directionOrder.map(l => LETTER_META[l]).filter(Boolean);
+            } else if (directionSubMode === 'post-game') {
+                stops = [LETTER_META.A, LETTER_META.B, LETTER_META.D];
+            } else {
+                stops = [LETTER_META.A, LETTER_META.D, LETTER_META.B];
+            }
+
+            const n = stops.length;
+            const pillsHTML = stops.map((s, i) =>
+                `<div class="sub-mode-row"><span class="sub-mode-pill" style="background:${s.bg};color:${s.fg};border-color:${s.bg};">${s.label}</span></div>`
+            ).join('');
+
+            // Generate SVG connectors: 2 arrows per transition (n-1 transitions)
+            const pairCount = Math.max(0, n - 1);
+            const linesHTML  = '<line class="sub-mode-connector"/>'.repeat(pairCount * 2);
+            const arrowsHTML = '<polygon class="sub-mode-arrowhead"/>'.repeat(pairCount * 2);
+
+            subModeDesc.innerHTML = pillsHTML +
+                `<svg class="sub-mode-svg" xmlns="http://www.w3.org/2000/svg">${linesHTML}${arrowsHTML}</svg>`;
             requestAnimationFrame(() => _equalizePillsAndDrawArrows());
         }
     }
@@ -6536,10 +6633,27 @@ function updateStatus(text, isSearching = false) {
     function _equalizePillsAndDrawArrows() {
         if (!subModeDesc) return;
         const pills = subModeDesc.querySelectorAll('.sub-mode-pill');
-        if (pills.length === 0) return;
+        const n = pills.length;
+        if (n === 0) return;
+
+        // 1. Equalize pill widths
         let maxW = 0;
-        pills.forEach(p => { p.style.width = ''; maxW = Math.max(maxW, p.offsetWidth); });
+        pills.forEach(p => { p.style.width = ''; p.style.marginLeft = ''; maxW = Math.max(maxW, p.offsetWidth); });
         if (maxW > 0) pills.forEach(p => { p.style.width = maxW + 'px'; });
+
+        // 2. Position pills in an evenly-spaced diagonal cascade.
+        //    For n=3 this reproduces left / center / right exactly.
+        //    For n=4 it produces 0% / 33% / 66% / 100%.
+        if (n >= 2) {
+            const row = pills[0].closest('.sub-mode-row');
+            const rowW = row ? row.offsetWidth : subModeDesc.offsetWidth;
+            const available = rowW - maxW; // horizontal space not occupied by pill
+            for (let i = 0; i < n; i++) {
+                const offset = (i / (n - 1)) * available;
+                pills[i].style.marginLeft = offset + 'px';
+            }
+        }
+
         _drawSubModeArrows();
     }
 
@@ -6549,7 +6663,9 @@ function updateStatus(text, isSearching = false) {
         const lines  = subModeDesc.querySelectorAll('.sub-mode-connector');
         const arrows = subModeDesc.querySelectorAll('.sub-mode-arrowhead');
         const svg    = subModeDesc.querySelector('.sub-mode-svg');
-        if (pills.length < 3 || lines.length < 4 || arrows.length < 4 || !svg) return;
+        const n = pills.length;
+        const pairCount = Math.max(0, n - 1);
+        if (n < 2 || lines.length < pairCount * 2 || arrows.length < pairCount * 2 || !svg) return;
 
         const cRect = subModeDesc.getBoundingClientRect();
         // Skip if container not visible (overlay hidden)
@@ -6567,14 +6683,12 @@ function updateStatus(text, isSearching = false) {
         function setArrowhead(polygon, x1, y1, x2, y2) {
             const angle = Math.atan2(y2 - y1, x2 - x1);
             const cos = Math.cos(angle), sin = Math.sin(angle);
-            // Base center sits AL back from the tip along the line
             const bx = x2 - AL * cos, by = y2 - AL * sin;
-            // Perpendicular offset for the two base corners
             polygon.setAttribute('points',
                 `${x2},${y2} ${bx - AW * sin},${by + AW * cos} ${bx + AW * sin},${by - AW * cos}`);
         }
 
-        for (let i = 0; i < 2; i++) {
+        for (let i = 0; i < pairCount; i++) {
             const from = rects[i];
             const to   = rects[i + 1];
 
@@ -6648,11 +6762,12 @@ function updateStatus(text, isSearching = false) {
         });
     }
 
-    // ── Sub-mode toggle ──
+    // ── Sub-mode toggle (3-way: pre-game / post-game / advanced) ──
     function getSubModeOrder(mode) {
         return mode === 'post-game' ? ['A', 'B', 'D'] : ['A', 'D', 'B'];
     }
 
+    // Pre-game and Post-game buttons — switch to preset order
     [subModePreBtn, subModePostBtn].forEach(btn => {
         if (!btn) return;
         btn.addEventListener('click', () => {
@@ -6662,11 +6777,32 @@ function updateStatus(text, isSearching = false) {
             try {
                 localStorage.setItem('laso_direction_sub_mode', directionSubMode);
                 localStorage.setItem('laso_use_advanced_order', 'false');
-                localStorage.setItem('laso_direction_order', JSON.stringify(directionOrder));
             } catch (e) {}
             syncSubModeUI();
         });
     });
+
+    // Advanced shortcut button — restores the saved advanced order
+    if (subModeAdvBtn) {
+        subModeAdvBtn.addEventListener('click', () => {
+            if (!_advancedSaved) return; // disabled — no saved config yet
+            directionSubMode = 'advanced';
+            useAdvancedOrder = true;
+            // Restore the saved advanced order from localStorage
+            try {
+                const savedOrder = localStorage.getItem('laso_direction_order');
+                if (savedOrder) {
+                    const parsed = JSON.parse(savedOrder);
+                    if (Array.isArray(parsed) && parsed.every(l => ['A','B','C','D'].includes(l))) {
+                        directionOrder = parsed;
+                    }
+                }
+                localStorage.setItem('laso_direction_sub_mode', 'advanced');
+                localStorage.setItem('laso_use_advanced_order', 'true');
+            } catch (e) {}
+            syncSubModeUI();
+        });
+    }
 
     // ── Info icon toggle (tooltip overlay when direction mode ON) ──
     function dismissTooltip() {
@@ -6702,6 +6838,12 @@ function updateStatus(text, isSearching = false) {
     function closeAdvancedPanel() {
         if (advancedPanel) advancedPanel.classList.add('hidden');
         if (mainPanel)     mainPanel.classList.remove('slide-out-left');
+        // Refresh pills + arrows now that the main panel is visible again
+        // (syncSubModeUI during save ran while panel was off-screen → zero rects)
+        syncSubModeUI();
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => _equalizePillsAndDrawArrows());
+        });
     }
 
     if (advancedBtn)      advancedBtn.addEventListener('click', openAdvancedPanel);
@@ -6884,12 +7026,21 @@ function updateStatus(text, isSearching = false) {
                 if (circle) newOrder.push(circle.dataset.letter);
             });
             directionOrder = newOrder;
-            try { localStorage.setItem('laso_direction_order', JSON.stringify(directionOrder)); } catch (e) {}
+            useAdvancedOrder = true;
+            directionSubMode = 'advanced';
+            _advancedSaved = true;
+            try {
+                localStorage.setItem('laso_direction_order', JSON.stringify(directionOrder));
+                localStorage.setItem('laso_use_advanced_order', 'true');
+                localStorage.setItem('laso_direction_sub_mode', 'advanced');
+                localStorage.setItem('laso_advanced_saved', 'true');
+            } catch (e) {}
+
+            // Enable and activate the Advanced shortcut button
+            syncSubModeUI();
 
             // Visual feedback: brief button flash
             saveBtn.style.background = '#34a853';
-            useAdvancedOrder = true;
-            try { localStorage.setItem('laso_use_advanced_order', 'true'); } catch (e) {}
             saveBtn.textContent = 'Saved!';
             setTimeout(() => {
                 saveBtn.style.background = '';
