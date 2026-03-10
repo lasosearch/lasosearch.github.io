@@ -290,6 +290,39 @@ body {
     50% { opacity: 0.35; }
 }
 
+/* Wild pin button — square control below my-location */
+.leaflet-control-wild-pin {
+    margin-top: 8px !important;
+}
+
+.leaflet-control-wild-pin-btn {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 30px !important;
+    height: 30px !important;
+    font-size: 14px !important;
+    line-height: 1 !important;
+    color: #333 !important;
+    cursor: pointer;
+    border-radius: 2px !important;
+}
+
+.leaflet-control-wild-pin-btn:hover {
+    background-color: #f4f4f4 !important;
+}
+
+.leaflet-control-wild-pin-btn.active {
+    color: #6366f1 !important;
+    background-color: #eef2ff !important;
+}
+
+/* Wild pin marker — prevent leaflet default icon sizing from interfering */
+.wild-pin-marker {
+    background: none !important;
+    border: none !important;
+}
+
 .leaflet-control-attribution {
     opacity: 0 !important;
     visibility: hidden !important;
@@ -1462,53 +1495,49 @@ body.overlay-active .direction-advanced-panel {
     position: relative;
     margin: 12px 0 0;
     width: 100%;
-    /* Reserve space for 4-stop display so panel height stays consistent */
-    min-height: 180px;
-    /* Vertically center pills when fewer stops don't fill the space */
+    /* height set by JS to match 4-stop (advanced) layout */
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;
 }
 
 .sub-mode-row {
-    padding: 7px 0;
+    flex: 0 0 auto;
+    padding: 4px 0;
     text-align: left;
+}
+
+.sub-mode-arrow-row {
+    flex: 1 1 0;
+    position: relative;
+    min-height: 0;
+    pointer-events: none;
+}
+
+.sub-mode-arrow-row img {
+    position: absolute;
+    top: 50%;
+    /* left set by JS to center between adjacent pills */
+    transform: translate(-50%, -50%) rotate(90deg);
+    opacity: 0.38;
 }
 
 .sub-mode-pill {
     display: inline-block;
-    padding: 4px 12px;
+    padding: 6px 16px;
     border-radius: 999px;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
-    font-size: 0.72rem;
+    font-size: 0.88rem;
     color: var(--text-secondary);
     font-weight: 500;
     position: relative;
     z-index: 1;
-    /* width set dynamically by syncSubModeUI() */
     text-align: center;
     box-sizing: border-box;
+    white-space: nowrap;
 }
 
-.sub-mode-svg {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-}
-
-.sub-mode-connector {
-    stroke: var(--text-tertiary);
-    stroke-width: 1.2;
-    fill: none;
-}
-
-.sub-mode-arrowhead {
-    fill: var(--text-tertiary);
-}
 
 /* =============================================================================
    Direction Mode — Advanced Link
@@ -1774,9 +1803,9 @@ body.overlay-active .direction-advanced-panel {
 }
 
 .direction-circle[data-letter="A"] { background: #ea4335; }
-.direction-circle[data-letter="B"] { background: #fbbc04; color: #202124; }
-.direction-circle[data-letter="C"] { background: #34a853; }
-.direction-circle[data-letter="D"] { background: #4285f4; }
+.direction-circle[data-letter="B"] { background: #4285f4; }
+.direction-circle[data-letter="C"] { background: #fbbc04; color: #202124; }
+.direction-circle[data-letter="D"] { background: #6366f1; }
 
 /* Disabled state for null locations */
 .direction-circle.disabled {

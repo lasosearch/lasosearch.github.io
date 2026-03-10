@@ -15,6 +15,7 @@ let tempPolyline = null;
 let markers = [];
 let selectedPlaceIndex = null;   // index of the currently selected/highlighted place
 let _highlightedMarkerIndex = null; // index of marker shown as enlarged green pin (overlay minimized)
+let wildPinMarker = null;        // draggable indigo pin placed by user (Direction Mode location D)
 let isDrawingMode = false;
 let isDrawing = false; // true while mouse is held down
 let isMouseDown = false; // track mouse button state
@@ -52,46 +53,30 @@ function getMinZoomLevelToDraw() {
     return isMobileView() ? 1 : 2;
 }
 
-// Direction Mode — map center at time of last draw search
-let drawSearchOrigin = null; // [lat, lng]
+// Direction Mode — fallback origin for simple direction URLs
+let drawSearchOrigin = null; // [lat, lng] captured at draw-search time
 let directionModeEnabled = false;
 let directionSubMode = 'pre-game'; // 'pre-game' | 'post-game'
 let useAdvancedOrder = false;       // true when user saves custom order via Advanced panel
 
 // Direction Mode Advanced — four-location model
 // A = auto-detected current location (GPS/IP)
-// B = address searched in location search box
-// C = map center at time of last Draw Search
-// D = selected place from search results (resolved at click-time)
+// B = selected location (clicked place from search results; set at click-time)
+// C = searched location (address typed in the search box)
+// D = wild pin (draggable indigo pin placed by user; null when not on map)
 const directionLocations = { A: null, B: null, C: null, D: null };
-let directionOrder = ['A', 'D', 'B']; // default stop order (pre-game), persisted to localStorage
-
-/**
- * Determine whether to use B (searched address) or C (map center at draw time)
- * as the reference point.  Uses B when map center ≈ searched location, C otherwise.
- */
-function getSmartReference() {
-    if (!directionLocations.B) {
-        // No searched location — prefer current location, fall back to map center
-        return directionLocations.A ? 'A' : 'C';
-    }
-    if (!directionLocations.C) return 'B';
-    const latDiff = Math.abs(directionLocations.B.lat - directionLocations.C.lat);
-    const lngDiff = Math.abs(directionLocations.B.lng - directionLocations.C.lng);
-    if (latDiff < 0.0005 && lngDiff < 0.0005) return 'B';
-    return 'C';
-}
+let directionOrder = ['A', 'B', 'C']; // default stop order (pre-game), persisted to localStorage
 
 /**
  * Return the effective direction order based on sub-mode or advanced override.
- * Pre-game:  A → D → B  (current location → selected place → searched area)
- * Post-game: A → B → D  (current location → searched area → selected place)
+ * Pre-game:  A → B → C  (current location → selected place → searched location)
+ * Post-game: A → C → B  (current location → searched location → selected place)
  */
 function getEffectiveDirectionOrder() {
     if (useAdvancedOrder && directionOrder.length >= 2) {
         return directionOrder;
     }
-    return directionSubMode === 'post-game' ? ['A', 'B', 'D'] : ['A', 'D', 'B'];
+    return directionSubMode === 'post-game' ? ['A', 'C', 'B'] : ['A', 'B', 'C'];
 }
 
 // Search results
@@ -690,6 +675,30 @@ function initMap() {
     });
     new MyLocationControl().addTo(map);
 
+    // Wild pin button — square control below my-location
+    const WildPinControl = L.Control.extend({
+        options: { position: 'topleft' },
+        onAdd() {
+            const container = L.DomUtil.create('div', 'leaflet-control-wild-pin leaflet-bar leaflet-control');
+            const btn = L.DomUtil.create('a', 'leaflet-control-wild-pin-btn', container);
+            btn.innerHTML = '<i class="fas fa-thumb-tack"></i>';
+            btn.href = '#';
+            btn.title = 'Place wild pin';
+            btn.role = 'button';
+            btn.setAttribute('aria-label', 'Place wild pin');
+
+            L.DomEvent.disableClickPropagation(container);
+
+            L.DomEvent.on(btn, 'click', (e) => {
+                L.DomEvent.preventDefault(e);
+                toggleWildPin();
+            });
+
+            return container;
+        }
+    });
+    new WildPinControl().addTo(map);
+
     // Add OpenStreetMap tile layer (completely free, no API key)
     L.tileLayer(OSM_TILE_URL, {
         maxZoom: 19,
@@ -1176,6 +1185,84 @@ function updateMyLocationButtonState() {
 }
 
 // =============================================================================
+// Wild Pin — draggable indigo pin (Direction Mode location D)
+// =============================================================================
+
+function toggleWildPin() {
+    if (wildPinMarker) {
+        removeWildPin();
+    } else {
+        placeWildPin();
+    }
+    updateWildPinButtonState();
+}
+
+function placeWildPin() {
+    const center = map.getCenter();
+    const lat = center.lat;
+    const lng = center.lng;
+
+    wildPinMarker = L.marker([lat, lng], {
+        draggable: true,
+        icon: L.divIcon({
+            className: 'wild-pin-marker',
+            html: '<div style="width:44px;height:44px;border-radius:50%;background:#6366f1;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,0.4);border:3px solid #fff;"><i class="fas fa-thumb-tack" style="color:#fff;font-size:20px;"></i></div>',
+            iconSize: [44, 44],
+            iconAnchor: [22, 22]
+        })
+    }).addTo(map);
+
+    directionLocations.D = { lat, lng, label: 'Wild pin' };
+
+    wildPinMarker.bindPopup(_buildWildPinPopup(lat, lng), { maxWidth: 250, minWidth: 140 });
+    wildPinMarker.openPopup();
+
+    wildPinMarker.on('dragend', () => {
+        const pos = wildPinMarker.getLatLng();
+        directionLocations.D = { lat: pos.lat, lng: pos.lng, label: 'Wild pin' };
+        wildPinMarker.setPopupContent(_buildWildPinPopup(pos.lat, pos.lng));
+    });
+
+    wildPinMarker.on('click', () => {
+        wildPinMarker.openPopup();
+    });
+}
+
+function removeWildPin() {
+    if (wildPinMarker) {
+        if (map.hasLayer(wildPinMarker)) map.removeLayer(wildPinMarker);
+        wildPinMarker = null;
+    }
+    directionLocations.D = null;
+}
+
+function updateWildPinButtonState() {
+    const btn = document.querySelector('.leaflet-control-wild-pin-btn');
+    if (!btn) return;
+    btn.classList.toggle('active', !!wildPinMarker);
+    btn.title = wildPinMarker ? 'Remove wild pin' : 'Place wild pin';
+}
+
+function _buildWildPinPopup(lat, lng) {
+    const coordStr = lat.toFixed(5) + ',' + lng.toFixed(5);
+    const googleUrl = 'https://www.google.com/maps/search/?api=1&query=' + lat + ',' + lng;
+    const appleUrl = 'https://maps.apple.com/?ll=' + lat + ',' + lng + '&z=19';
+
+    const circleStyle = 'width:36px;height:36px;border-radius:50%;background:#f8f9fa;display:flex;align-items:center;justify-content:center;text-decoration:none;border:1px solid #e0e0e0;';
+
+    return '<div class="wild-pin-popup" style="text-align:center;">' +
+        '<div style="font-size:14px;color:#202124;font-weight:600;margin-bottom:6px;">Wild Pin</div>' +
+        '<div style="display:flex;justify-content:center;gap:10px;">' +
+            '<a href="' + googleUrl + '" target="_blank" rel="noopener" title="Google Maps" class="directions-capable" data-dest-lat="' + lat + '" data-dest-lng="' + lng + '" data-search-term="' + coordStr + '" data-map-provider="google" data-wild-pin="true" style="' + circleStyle + 'color:#4285f4;font-size:13px;">' +
+                '<i class="fab fa-google"></i></a>' +
+            '<a href="' + appleUrl + '" target="_blank" rel="noopener" title="Apple Maps" class="directions-capable" data-dest-lat="' + lat + '" data-dest-lng="' + lng + '" data-dest-name="Wild Pin" data-map-provider="apple" data-wild-pin="true" style="' + circleStyle + 'color:#333;font-size:15px;">' +
+                '<i class="fab fa-apple"></i></a>' +
+        '</div>' +
+        '<div style="font-size:10px;color:#999;margin-top:4px;">' + coordStr + '</div>' +
+    '</div>';
+}
+
+// =============================================================================
 // Platform-specific empty state (desktop shows placeholder; mobile unchanged)
 // =============================================================================
 function getDefaultEmptyStateHTML() {
@@ -1358,10 +1445,11 @@ function drawClear() {
     // Remove polygon
     removeCurrentPolygon();
 
-    // Stray-layer sweep — preserve searchAddressMarker and the tile layer
+    // Stray-layer sweep — preserve searchAddressMarker, wildPinMarker and the tile layer
     const strayLayers = [];
     map.eachLayer(layer => {
         if (layer === searchAddressMarker) return;
+        if (layer === wildPinMarker) return;
         if (layer instanceof L.Marker || layer instanceof L.Popup) {
             strayLayers.push(layer);
         }
@@ -2525,10 +2613,9 @@ async function performLasoSearch() {
         enr._megaPinIndex = -1;
     }
 
-    // Capture map center as the origin for Direction Mode
+    // Capture map center as the origin for Direction Mode fallback URLs
     const center = map.getCenter();
     drawSearchOrigin = [center.lat, center.lng];
-    directionLocations.C = { lat: center.lat, lng: center.lng, label: 'Map center' };
 
     // Show loading
     showLoading(true);
@@ -3630,6 +3717,7 @@ function updateAllMarkers() {
     const strayLayers = [];
     map.eachLayer(layer => {
         if (layer === searchAddressMarker) return;          // keep red pin
+        if (layer === wildPinMarker) return;               // keep wild pin
         if (layer instanceof L.TileLayer) return;           // keep tiles
         if (markers.includes(layer)) return;                // keep tracked drawing points
         if (layer instanceof L.Polygon || layer instanceof L.Polyline) return; // keep polygon
@@ -4780,7 +4868,7 @@ function displayGeocodeResult(result, searchQuery) {
 
     // Save search pin coordinates for priority sorting
     searchPinCoords = [lat, lon];
-    directionLocations.B = { lat: lat, lng: lon, label: displayAddress || searchQuery };
+    directionLocations.C = { lat: lat, lng: lon, label: displayAddress || searchQuery };
 
     // Enrich asynchronously — updates popup when data arrives
     _enrichSearchedLocation(result, marker, searchQuery, displayAddress, epochAtSearch);
@@ -5701,6 +5789,10 @@ function clearAll() {
     _lastSearchedAddress = null;
     updateZoomFitButtonState();
 
+    // Remove wild pin
+    removeWildPin();
+    updateWildPinButtonState();
+
     // Clear address input and hide X button
     const addrInput = document.getElementById('address-input');
     if (addrInput) {
@@ -6531,7 +6623,7 @@ function updateStatus(text, isSearching = false) {
         }
         if (!useAdvancedOrder) {
             // Runtime order follows the active preset
-            directionOrder = directionSubMode === 'post-game' ? ['A', 'B', 'D'] : ['A', 'D', 'B'];
+            directionOrder = directionSubMode === 'post-game' ? ['A', 'C', 'B'] : ['A', 'B', 'C'];
         }
     } catch (e) { /* localStorage unavailable */ }
 
@@ -6562,9 +6654,9 @@ function updateStatus(text, isSearching = false) {
     // Letter metadata for pill display
     const LETTER_META = {
         A: { label: 'Current location',  bg: '#ea4335', fg: '#fff' },
-        B: { label: 'Searched place',    bg: '#fbbc04', fg: '#333' },
-        C: { label: 'Map center',        bg: '#34a853', fg: '#fff' },
-        D: { label: 'Selected place',    bg: '#4285f4', fg: '#fff' }
+        B: { label: 'Selected location', bg: '#4285f4', fg: '#fff' },
+        C: { label: 'Searched location', bg: '#fbbc04', fg: '#333' },
+        D: { label: 'Wild pin',          bg: '#6366f1', fg: '#fff' }
     };
 
     if (toggle) toggle.checked = directionModeEnabled;
@@ -6609,30 +6701,32 @@ function updateStatus(text, isSearching = false) {
             if (directionSubMode === 'advanced' && useAdvancedOrder && directionOrder.length >= 2) {
                 stops = directionOrder.map(l => LETTER_META[l]).filter(Boolean);
             } else if (directionSubMode === 'post-game') {
-                stops = [LETTER_META.A, LETTER_META.B, LETTER_META.D];
+                stops = [LETTER_META.A, LETTER_META.C, LETTER_META.B];
             } else {
-                stops = [LETTER_META.A, LETTER_META.D, LETTER_META.B];
+                stops = [LETTER_META.A, LETTER_META.B, LETTER_META.C];
             }
 
             const n = stops.length;
-            const pillsHTML = stops.map((s, i) =>
-                `<div class="sub-mode-row"><span class="sub-mode-pill" style="background:${s.bg};color:${s.fg};border-color:${s.bg};">${s.label}</span></div>`
-            ).join('');
-
-            // Generate SVG connectors: 2 arrows per transition (n-1 transitions)
-            const pairCount = Math.max(0, n - 1);
-            const linesHTML  = '<line class="sub-mode-connector"/>'.repeat(pairCount * 2);
-            const arrowsHTML = '<polygon class="sub-mode-arrowhead"/>'.repeat(pairCount * 2);
-
-            subModeDesc.innerHTML = pillsHTML +
-                `<svg class="sub-mode-svg" xmlns="http://www.w3.org/2000/svg">${linesHTML}${arrowsHTML}</svg>`;
-            requestAnimationFrame(() => _equalizePillsAndDrawArrows());
+            let html = '';
+            for (let i = 0; i < n; i++) {
+                const s = stops[i];
+                html += `<div class="sub-mode-row"><span class="sub-mode-pill" style="background:${s.bg};color:${s.fg};border-color:${s.bg};">${s.label}</span></div>`;
+                if (i < n - 1) {
+                    html += `<div class="sub-mode-arrow-row"><img src="Curved_solid_arrow.svg" alt="→"></div>`;
+                }
+            }
+            subModeDesc.innerHTML = html;
+            requestAnimationFrame(() => _layoutPillsAndArrows());
         }
     }
 
-    function _equalizePillsAndDrawArrows() {
+    const BASE_ARROW_H = 38; // minimum arrow row height (matches 4-stop advanced mode)
+    let _descFixedHeight = 0;
+
+    function _layoutPillsAndArrows() {
         if (!subModeDesc) return;
         const pills = subModeDesc.querySelectorAll('.sub-mode-pill');
+        const arrowRows = subModeDesc.querySelectorAll('.sub-mode-arrow-row');
         const n = pills.length;
         if (n === 0) return;
 
@@ -6641,78 +6735,56 @@ function updateStatus(text, isSearching = false) {
         pills.forEach(p => { p.style.width = ''; p.style.marginLeft = ''; maxW = Math.max(maxW, p.offsetWidth); });
         if (maxW > 0) pills.forEach(p => { p.style.width = maxW + 'px'; });
 
-        // 2. Position pills in an evenly-spaced diagonal cascade.
-        //    For n=3 this reproduces left / center / right exactly.
-        //    For n=4 it produces 0% / 33% / 66% / 100%.
+        // 2. Measure and lock container height to 4-stop layout (once).
+        //    This keeps the overlay the same height regardless of sub-mode.
+        if (!_descFixedHeight) {
+            const pillRowH = pills[0].closest('.sub-mode-row').offsetHeight;
+            if (pillRowH > 0) {
+                _descFixedHeight = 4 * pillRowH + 3 * BASE_ARROW_H;
+            }
+        }
+        if (_descFixedHeight > 0) {
+            subModeDesc.style.height = _descFixedHeight + 'px';
+        }
+
+        // 3. Position pills in an evenly-spaced diagonal cascade (left → right).
         if (n >= 2) {
             const row = pills[0].closest('.sub-mode-row');
             const rowW = row ? row.offsetWidth : subModeDesc.offsetWidth;
-            const available = rowW - maxW; // horizontal space not occupied by pill
+            const available = rowW - maxW;
             for (let i = 0; i < n; i++) {
                 const offset = (i / (n - 1)) * available;
                 pills[i].style.marginLeft = offset + 'px';
             }
-        }
 
-        _drawSubModeArrows();
-    }
+            // 4. Calculate arrow row height analytically (no DOM measurement needed).
+            //    With flex:1 the available vertical space distributes evenly.
+            const pillRowH = pills[0].closest('.sub-mode-row').offsetHeight;
+            const totalPillH = n * pillRowH;
+            const arrowCount = n - 1;
+            const arrowRowH = arrowCount > 0
+                ? (_descFixedHeight - totalPillH) / arrowCount
+                : BASE_ARROW_H;
 
-    function _drawSubModeArrows() {
-        if (!subModeDesc) return;
-        const pills  = subModeDesc.querySelectorAll('.sub-mode-pill');
-        const lines  = subModeDesc.querySelectorAll('.sub-mode-connector');
-        const arrows = subModeDesc.querySelectorAll('.sub-mode-arrowhead');
-        const svg    = subModeDesc.querySelector('.sub-mode-svg');
-        const n = pills.length;
-        const pairCount = Math.max(0, n - 1);
-        if (n < 2 || lines.length < pairCount * 2 || arrows.length < pairCount * 2 || !svg) return;
+            // 5. Size and position each arrow image.
+            //    Post-rotation: CSS width → visual height, CSS height → visual width.
+            //    We want the visual height ≈ 80% of the arrow row height.
+            const SVG_RATIO = 140 / 250; // original SVG width / height
+            for (let i = 0; i < arrowRows.length; i++) {
+                const img = arrowRows[i].querySelector('img');
+                if (!img) continue;
 
-        const cRect = subModeDesc.getBoundingClientRect();
-        // Skip if container not visible (overlay hidden)
-        if (cRect.width === 0 || cRect.height === 0) return;
+                // Horizontal position: center between adjacent pill centers
+                const leftOff  = parseFloat(pills[i].style.marginLeft) || 0;
+                const rightOff = parseFloat(pills[i + 1].style.marginLeft) || 0;
+                const midCenter = (leftOff + rightOff) / 2 + maxW / 2;
+                img.style.left = midCenter + 'px';
 
-        // Set SVG viewBox to match actual pixel dimensions
-        svg.setAttribute('viewBox', `0 0 ${cRect.width} ${cRect.height}`);
-
-        const rects = Array.from(pills).map(p => p.getBoundingClientRect());
-
-        // Arrowhead geometry (matches previous marker: 10×10 viewBox at 6×strokeWidth render)
-        const AL = 7;    // arrowhead length (base → tip)
-        const AW = 3.5;  // arrowhead half-width
-
-        function setArrowhead(polygon, x1, y1, x2, y2) {
-            const angle = Math.atan2(y2 - y1, x2 - x1);
-            const cos = Math.cos(angle), sin = Math.sin(angle);
-            const bx = x2 - AL * cos, by = y2 - AL * sin;
-            polygon.setAttribute('points',
-                `${x2},${y2} ${bx - AW * sin},${by + AW * cos} ${bx + AW * sin},${by - AW * cos}`);
-        }
-
-        for (let i = 0; i < pairCount; i++) {
-            const from = rects[i];
-            const to   = rects[i + 1];
-
-            // Arrow A: center-bottom of pill i → left edge, vertical center of pill i+1
-            const ax1 = from.left + from.width / 2 - cRect.left;
-            const ay1 = from.bottom - cRect.top + 2;
-            const ax2 = to.left - cRect.left - 2;
-            const ay2 = to.top + to.height / 2 - cRect.top;
-            lines[i * 2].setAttribute('x1', ax1);
-            lines[i * 2].setAttribute('y1', ay1);
-            lines[i * 2].setAttribute('x2', ax2);
-            lines[i * 2].setAttribute('y2', ay2);
-            setArrowhead(arrows[i * 2], ax1, ay1, ax2, ay2);
-
-            // Arrow B: right edge, vertical center of pill i → center-top of pill i+1
-            const bx1 = from.right - cRect.left + 2;
-            const by1 = from.top + from.height / 2 - cRect.top;
-            const bx2 = to.left + to.width / 2 - cRect.left;
-            const by2 = to.top - cRect.top - 2;
-            lines[i * 2 + 1].setAttribute('x1', bx1);
-            lines[i * 2 + 1].setAttribute('y1', by1);
-            lines[i * 2 + 1].setAttribute('x2', bx2);
-            lines[i * 2 + 1].setAttribute('y2', by2);
-            setArrowhead(arrows[i * 2 + 1], bx1, by1, bx2, by2);
+                // Size: post-rotation visual height = pre-rotation CSS width
+                const visualH = arrowRowH * 0.8;
+                img.style.width = visualH + 'px';
+                img.style.height = (visualH / SVG_RATIO) + 'px';
+            }
         }
     }
     syncDirectionUIVisibility();
@@ -6729,7 +6801,7 @@ function updateStatus(text, isSearching = false) {
         // Double-rAF: first rAF lets browser process display:none → visible,
         // second rAF fires after layout is complete so pills measure correctly.
         requestAnimationFrame(() => {
-            requestAnimationFrame(() => _equalizePillsAndDrawArrows());
+            requestAnimationFrame(() => _layoutPillsAndArrows());
         });
     }
 
@@ -6757,14 +6829,14 @@ function updateStatus(text, isSearching = false) {
             syncDirectionUIVisibility();
             // Redraw arrows after direction options fade in
             if (directionModeEnabled) {
-                setTimeout(() => _equalizePillsAndDrawArrows(), 200);
+                setTimeout(() => _layoutPillsAndArrows(), 200);
             }
         });
     }
 
     // ── Sub-mode toggle (3-way: pre-game / post-game / advanced) ──
     function getSubModeOrder(mode) {
-        return mode === 'post-game' ? ['A', 'B', 'D'] : ['A', 'D', 'B'];
+        return mode === 'post-game' ? ['A', 'C', 'B'] : ['A', 'B', 'C'];
     }
 
     // Pre-game and Post-game buttons — switch to preset order
@@ -6842,7 +6914,7 @@ function updateStatus(text, isSearching = false) {
         // (syncSubModeUI during save ran while panel was off-screen → zero rects)
         syncSubModeUI();
         requestAnimationFrame(() => {
-            requestAnimationFrame(() => _equalizePillsAndDrawArrows());
+            requestAnimationFrame(() => _layoutPillsAndArrows());
         });
     }
 
@@ -7056,8 +7128,11 @@ function updateStatus(text, isSearching = false) {
 
 /**
  * Build a multi-stop directions URL for the given provider using the user's
- * saved directionOrder.  Locations A/B/C are resolved from directionLocations;
- * D is resolved at click-time from the link's data attributes.
+ * saved directionOrder.
+ *   A = current location (directionLocations.A)
+ *   B = selected place (resolved at click-time from destLat/destLng)
+ *   C = searched location (directionLocations.C)
+ *   D = wild pin (directionLocations.D, null when not on map)
  *
  * The first location in order becomes the origin, the last becomes the
  * destination, and everything in between becomes intermediate waypoints.
@@ -7066,17 +7141,13 @@ function updateStatus(text, isSearching = false) {
  * are available, or to a pin/search URL if direction mode is off.
  */
 function buildMultiStopUrl(provider, destLat, destLng, destName, searchTerm, order) {
-    // B↔C fallback: if searched address (B) is null, substitute map center (C) and vice versa
-    const locB = directionLocations.B || directionLocations.C;
-    const locC = directionLocations.C || directionLocations.B;
-
     const locMap = {
         A: directionLocations.A,
-        B: locB,
-        C: locC,
-        D: (destLat && destLng)
+        B: (destLat && destLng)
             ? { lat: parseFloat(destLat), lng: parseFloat(destLng), label: destName || '' }
-            : null
+            : null,
+        C: directionLocations.C,
+        D: directionLocations.D
     };
 
     // Build ordered list, filtering out null locations
@@ -7151,8 +7222,8 @@ function _getAppleFallbackUrl(destLat, destLng, name) {
 
 /**
  * Check whether the clicked destination is effectively the same place as
- * the red search pin (directionLocations.B).  Returns true when D ≈ B,
- * meaning the B waypoint would be redundant in a multi-stop route.
+ * the red search pin (directionLocations.C).  Returns true when dest ≈ C,
+ * meaning the C waypoint would be redundant in a multi-stop route.
  *
  * Also returns true if a selected green pin exists but its address matches
  * the red pin (mega-pin duplicate) — that green pin doesn't count as a
@@ -7160,16 +7231,16 @@ function _getAppleFallbackUrl(destLat, destLng, name) {
  */
 function _isDestSameAsSearchPin(destLat, destLng) {
     if (!searchAddressMarker || !map.hasLayer(searchAddressMarker)) return false;
-    const locB = directionLocations.B;
-    if (!locB) return false;
+    const locC = directionLocations.C;
+    if (!locC) return false;
 
     // Check dest against ALL known coords for the search pin:
-    //   1. directionLocations.B (Nominatim)
+    //   1. directionLocations.C (Nominatim)
     //   2. marker's actual position
     //   3. mega pin place's Google Places coords
     const THRESH = 0.0005; // ~50 m
     const candidates = [
-        { lat: locB.lat, lng: locB.lng }
+        { lat: locC.lat, lng: locC.lng }
     ];
     const markerLL = searchAddressMarker.getLatLng();
     candidates.push({ lat: markerLL.lat, lng: markerLL.lng });
@@ -7181,7 +7252,7 @@ function _isDestSameAsSearchPin(destLat, destLng) {
         Math.abs(destLat - c.lat) < THRESH && Math.abs(destLng - c.lng) < THRESH
     );
 
-    const searchAddr = _normName(searchAddressMarker._searchAddress || locB.label || '');
+    const searchAddr = _normName(searchAddressMarker._searchAddress || locC.label || '');
 
     if (!coordMatch && !searchAddr) return false;
 
@@ -7205,7 +7276,7 @@ function _isDestSameAsSearchPin(destLat, destLng) {
                 console.log(`[Directions] Green pin #${_highlightedMarkerIndex} "${greenPlace.name}" matches search pin — treating as same`);
             }
         }
-        console.log(`[Directions] Destination matches search pin (B) — using simple A→D`);
+        console.log(`[Directions] Destination matches search pin (C) — using simple A→dest`);
         return true;
     }
 
@@ -7229,14 +7300,22 @@ document.addEventListener('click', function(e) {
 
     e.preventDefault();
 
+    // Set B (selected location) from the clicked link — skip for wild pin
+    if (!link.dataset.wildPin) {
+        directionLocations.B = {
+            lat: parseFloat(destLat),
+            lng: parseFloat(destLng),
+            label: link.dataset.destName || ''
+        };
+    }
+
     let url;
     const provider = link.dataset.mapProvider;
 
     // ── Special case: red search pin ──
-    // When D (clicked destination) ≈ B (searched address), the B waypoint
-    // in the multi-stop route is redundant (same place).  Use simple
-    // current-location → destination instead.  Only allow multi-stop if
-    // a DIFFERENT green pin is meaningfully involved.
+    // When the clicked destination ≈ C (searched address), a multi-stop
+    // route through C is redundant (same place).  Use simple
+    // current-location → destination instead.
     const destIsSearchPin = _isDestSameAsSearchPin(parseFloat(destLat), parseFloat(destLng));
 
     if (destIsSearchPin) {
@@ -7250,7 +7329,7 @@ document.addEventListener('click', function(e) {
             } else if (provider === 'apple') {
                 url = `https://maps.apple.com/?saddr=${userLoc.lat},${userLoc.lng}&daddr=${destLat},${destLng}&dirflg=d`;
             }
-            console.log(`[Directions] Search pin special case: simple A→D (${provider})`);
+            console.log(`[Directions] Search pin special case: simple A→dest (${provider})`);
         }
     }
 
