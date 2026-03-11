@@ -408,6 +408,18 @@ async function getIPLocation() {
 // =============================================================================
 
 /**
+ * Returns the px height of the fixed mobile header that overlaps the map canvas.
+ * On desktop (or when the header isn't fixed) returns 0 — the header is in
+ * normal flow so map.getSize() already excludes it.
+ */
+function getMobileHeaderPad() {
+    if (!isMobileView()) return 0;
+    const header = document.querySelector('.header');
+    if (!header) return 0;
+    return header.getBoundingClientRect().bottom;
+}
+
+/**
  * Gifsig-style polygon fit: scan every vertex to find the four extremes
  * (closest point to each canvas edge), then compute the exact fractional zoom
  * that places those extremes at exactly `pad*` pixels from their nearest edge.
@@ -664,6 +676,7 @@ function initMap() {
                 } else {
                     // Polygon fit (existing logic)
                     const padV = 10, padH = 10;
+                    const padTop = padV + getMobileHeaderPad();
                     let padBottom = padV;
                     if (isMobileView()) {
                         const mapEl = document.getElementById('map');
@@ -674,7 +687,7 @@ function initMap() {
                         }
                     }
                     const { center, zoom } = calculatePolygonFit(
-                        currentPolygon, map, padV, padH, padBottom, padH
+                        currentPolygon, map, padTop, padH, padBottom, padH
                     );
                     const fitState = { center, zoom: Math.round(zoom * 100) / 100 };
                     applyPolygonFit(fitState);
@@ -1984,7 +1997,7 @@ function closeFreehandPolygon() {
 
     // Gifsig-style auto-fit: scan every vertex, ensure ≥10 px from each canvas edge.
     const { center: fitCenter, zoom: rawFitZoom } = calculatePolygonFit(
-        currentPolygon, map, 10, 10, 10, 10
+        currentPolygon, map, 10 + getMobileHeaderPad(), 10, 10, 10
     );
 
     // Clamp: fit zoom lives between fitFloor and fitFloor + 1
@@ -2739,10 +2752,11 @@ async function performLasoSearch() {
             map.invalidateSize({ animate: false });
 
             // State 1: results-open (toaster covers bottom half of map)
+            const headerPad = getMobileHeaderPad();
             const toasterVisibleH = mapEl ? mapEl.offsetHeight * 0.5 : 0;
             const { center: openCenter, zoom: rawOpenZoom } = calculatePolygonFit(
                 currentPolygon, map,
-                5, 5, toasterVisibleH + 5, 5
+                5 + headerPad, 5, toasterVisibleH + 5, 5
             );
             fitStateResultsOpen = {
                 center: openCenter,
@@ -2752,7 +2766,7 @@ async function performLasoSearch() {
             // State 2: lip-peeked (only 52px lip visible at bottom)
             const { center: lipCenter, zoom: rawLipZoom } = calculatePolygonFit(
                 currentPolygon, map,
-                5, 5, TOASTER_LIP_HEIGHT + 5, 5
+                5 + headerPad, 5, TOASTER_LIP_HEIGHT + 5, 5
             );
             fitStateLipPeeked = {
                 center: lipCenter,
