@@ -407,7 +407,7 @@ body.is-mobile .header-actions > .btn span {
    Both use --header-bottom so they share the same horizontal baseline. */
 body.is-mobile .leaflet-top.leaflet-left {
     top: var(--header-bottom, 110px) !important;
-    left: 10px !important;
+    left: -5px !important;
 }
 
 /* Remove Leaflet's default margin on the first control so buttons start
@@ -591,7 +591,7 @@ body.is-mobile .drawing-instructions p {
 /* Positioned to the right of the 5 Leaflet buttons, sharing the same top baseline */
 body.is-mobile .zoom-level-indicator {
     top: var(--header-bottom, 110px);
-    left: 60px; /* 10px (leaflet-left) + 30px (button width) + 10px gap */
+    left: 45px; /* 10px (leaflet-left) + 30px (button width) + 10px gap */
     padding: 5px 8px;
     font-size: 0.75rem;
     gap: 4px;
