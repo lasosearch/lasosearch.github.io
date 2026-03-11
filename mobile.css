@@ -107,12 +107,12 @@ body.is-mobile .header-actions > .draw-btn-wrapper > .btn.btn-outline.pressed {
 }
 
 body.is-mobile .search-btn.pressed {
-    transform: translateY(2px);
+    transform: translateY(0);
     box-shadow: 0 2px 0 var(--primary-dark);
 }
 
 body.is-mobile .search-clear-btn.pressed {
-    transform: translateY(2px);
+    transform: translateY(0);
     box-shadow: 0 2px 0 var(--border-color);
 }
 
@@ -175,16 +175,23 @@ body.is-mobile .app-container {
 
 /* ================================================================
    Header: two rows
-   Row 1 — logo icon + search bar
-   Row 2 — draw, LASO search, delete, filter/sort
+   Row 1 — search bar + action buttons + settings
+   Row 2 — draw, LASO search, clear all
    ================================================================ */
 body.is-mobile .header {
     --row-h: 40px;
     flex-wrap: wrap;
-    padding: 6px 10px;
-    gap: 4px 8px;
-    overflow: hidden;
+    padding: 8px 10px 12px;
+    gap: 6px 8px;
+    overflow: visible;
     flex-shrink: 0;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    border-top: none;
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+    box-shadow:
+        0 0 0 1px rgba(0, 0, 0, 0.03),
+        0 1px 2px rgba(60, 64, 67, 0.10),
+        0 4px 12px -2px rgba(60, 64, 67, 0.08);
 }
 
 body.is-mobile .logo {
@@ -212,52 +219,52 @@ body.is-mobile .search-box input {
     font-size: 16px;
 }
 
-/* Pull search-clear and search buttons out of search-box on mobile.
-   Structural properties (width, height, flex, border-radius, transition)
-   mirror .header > .settings-btn exactly — only colors differ. */
-body.is-mobile .search-box .search-clear-btn,
-body.is-mobile .search-box .search-btn {
-    position: absolute;
-    top: 50%;
-    transform: translateY(calc(-50% - 2px));
+/* Search buttons — moved to header flex flow by JS (no absolute positioning).
+   Sizing mirrors .header > .settings-btn; only colors differ. */
+body.is-mobile .header > .search-btn,
+body.is-mobile .header > .search-clear-btn {
+    order: 2;
     width: var(--row-h);
     height: calc(var(--row-h) - 4px);
     flex: 0 0 auto;
     border-radius: var(--radius-sm);
     font-size: 15px;
-    display: none;
     align-items: center;
     justify-content: center;
     padding: 0;
     box-sizing: border-box;
+    transform: translateY(-2px);
 }
 
-body.is-mobile .search-box .search-btn {
-    right: calc(-1 * var(--row-h) - 8px);
+body.is-mobile .header > .search-btn {
     display: flex;
 }
 
-body.is-mobile .search-box .search-clear-btn {
-    right: calc(-1 * var(--row-h) - 8px);
+/* Icons inside row-1 buttons — fill the container */
+body.is-mobile .header > .search-btn i,
+body.is-mobile .header > .search-clear-btn i,
+body.is-mobile .header > .settings-btn i {
+    font-size: 20px;
+    line-height: 1;
+    margin: 0;
+}
+
+body.is-mobile .header > .search-clear-btn {
+    display: none;
     background: var(--bg-tertiary);
 }
 
-/* When X is visible, push arrow button to second slot */
-body.is-mobile .has-clear .search-box .search-btn {
-    right: calc(-2 * var(--row-h) - 16px);
-}
-
-body.is-mobile .search-box .search-clear-btn.visible {
+body.is-mobile .header > .search-clear-btn.visible {
     display: flex;
 }
 
-body.is-mobile .search-box .search-btn.pressed {
-    transform: translateY(calc(-50% - 2px + 2px));
+body.is-mobile .header > .search-btn.pressed {
+    transform: translateY(0);
     box-shadow: 0 2px 0 var(--primary-dark);
 }
 
-body.is-mobile .search-box .search-clear-btn.pressed {
-    transform: translateY(calc(-50% - 2px + 2px));
+body.is-mobile .header > .search-clear-btn.pressed {
+    transform: translateY(0);
     box-shadow: 0 2px 0 var(--border-color);
 }
 
@@ -266,12 +273,6 @@ body.is-mobile .search-container {
     flex: 1;
     min-width: 0;
     max-width: none;
-    position: relative;
-    margin-right: calc(var(--row-h) + 8px);
-}
-
-body.is-mobile .search-container.has-clear {
-    margin-right: calc(2 * var(--row-h) + 16px);
 }
 
 /* Actions row: force to row 2, full width */

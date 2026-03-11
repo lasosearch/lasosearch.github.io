@@ -1290,6 +1290,18 @@ function setupMobileLayout() {
 
     // Move filter controls from header into sidebar, above scrollable content
     sidebar.insertBefore(filterControls, sidebarContent);
+
+    // Move search action buttons out of search-box into header flex flow
+    // so spacing is handled by flexbox gap — no magic-number offsets needed.
+    const header = document.querySelector('.header');
+    const settingsBtn = document.getElementById('settings-btn');
+    const searchBtn = document.getElementById('search-btn');
+    const searchClearBtn = document.getElementById('search-clear-btn');
+
+    if (header && settingsBtn) {
+        if (searchClearBtn) header.insertBefore(searchClearBtn, settingsBtn);
+        if (searchBtn) header.insertBefore(searchBtn, settingsBtn);
+    }
 }
 
 // =============================================================================
