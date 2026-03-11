@@ -403,9 +403,17 @@ body.is-mobile .header-actions > .btn span {
     display: inline;
 }
 
-/* Leaflet controls — push below the floating fixed header */
-body.is-mobile .leaflet-top {
+/* Leaflet controls & zoom indicator — push below the floating header.
+   Both use --header-bottom so they share the same horizontal baseline. */
+body.is-mobile .leaflet-top.leaflet-left {
     top: var(--header-bottom, 110px) !important;
+    left: 10px !important;
+}
+
+/* Remove Leaflet's default margin on the first control so buttons start
+   exactly at --header-bottom, aligning with the zoom indicator. */
+body.is-mobile .leaflet-top.leaflet-left .leaflet-control:first-child {
+    margin-top: 0 !important;
 }
 
 /* ---- Main content: map fills remaining space ---- */
@@ -580,10 +588,11 @@ body.is-mobile .drawing-instructions p {
 }
 
 /* ---- Zoom level indicator ---- */
+/* Positioned to the right of the 5 Leaflet buttons, sharing the same top baseline */
 body.is-mobile .zoom-level-indicator {
     top: var(--header-bottom, 110px);
-    left: 50px;
-    padding: 4px 10px;
+    left: 60px; /* 10px (leaflet-left) + 30px (button width) + 10px gap */
+    padding: 5px 8px;
     font-size: 0.75rem;
     gap: 4px;
 }
