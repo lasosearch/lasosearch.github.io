@@ -261,10 +261,12 @@ const _searchGuard = (() => {
 })();
 
 // =============================================================================
-// Location Persistence & IP Geolocation
+// Location Persistence & Permissions
 // =============================================================================
 
 const LOCATION_CHANGE_THRESHOLD = 500; // meters — ignore GPS fixes closer than this
+const DEFAULT_LOCATION = [40.7813, -73.9740]; // Museum of Natural History
+const LOCATION_PERMISSION_KEY = 'laso_location_permission';
 
 function getSavedLocation() {
     try {
@@ -280,6 +282,106 @@ function saveLocation(lat, lng) {
         localStorage.setItem('laso_last_lat', String(lat));
         localStorage.setItem('laso_last_lng', String(lng));
     } catch (e) { /* localStorage unavailable */ }
+}
+
+function getLocationPermission() {
+    try { return localStorage.getItem(LOCATION_PERMISSION_KEY); }
+    catch (e) { return null; }
+}
+
+function setLocationPermission(value) {
+    try { localStorage.setItem(LOCATION_PERMISSION_KEY, value); }
+    catch (e) { /* localStorage unavailable */ }
+}
+
+/**
+ * Start GPS watchPosition — only called when permission is 'granted'.
+ * On the first fix, fly to the user's location if it differs significantly
+ * from the current map center.  Subsequent fixes update silently.
+ */
+function startLocationTracking() {
+    if (!navigator.geolocation) return;
+
+    let firstFix = true;
+    navigator.geolocation.watchPosition(
+        (position) => {
+            const loc = [position.coords.latitude, position.coords.longitude];
+            window._userLatLng = loc;
+            directionLocations.A = { lat: loc[0], lng: loc[1], label: 'Your location' };
+            saveLocation(loc[0], loc[1]);
+
+            if (firstFix) {
+                firstFix = false;
+                const mapCenter = map.getCenter();
+                const dist = calculateDistance(loc, [mapCenter.lat, mapCenter.lng]);
+                if (dist > LOCATION_CHANGE_THRESHOLD) {
+                    const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
+                    isLocationSearchZoom = true;
+                    map.flyTo(loc, targetZoom, { duration: 1.0 });
+                    map.once('moveend', () => {
+                        isLocationSearchZoom = false;
+                        currentZoomLevel = map.getZoom() - initialZoom;
+                        updateZoomLevelIndicator();
+                        updateDrawButtonState();
+                        updateStatus('Location found — Ready');
+                    });
+                } else {
+                    updateStatus('Location found — Ready');
+                }
+                updateMyLocationButtonState();
+            }
+        },
+        (error) => {
+            // Browser revoked permission after our modal grant — sync localStorage
+            if (error.code === error.PERMISSION_DENIED) {
+                setLocationPermission('denied');
+                updateMyLocationButtonState();
+            }
+            updateStatus('Ready');
+        },
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 }
+    );
+    updateMyLocationButtonState();
+}
+
+/**
+ * Show the location permission modal (dark overlay + card).
+ * "Share Location" triggers the browser prompt; "No Thank You" declines.
+ */
+function showLocationModal() {
+    const modal = document.getElementById('location-modal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+
+    const shareBtn = document.getElementById('location-share-btn');
+    const declineBtn = document.getElementById('location-decline-btn');
+
+    const close = () => { modal.classList.add('hidden'); };
+
+    shareBtn.addEventListener('click', () => {
+        if (!navigator.geolocation) { close(); return; }
+        navigator.geolocation.getCurrentPosition(
+            () => {
+                // Browser granted permission
+                setLocationPermission('granted');
+                close();
+                startLocationTracking();
+            },
+            () => {
+                // Browser denied permission
+                setLocationPermission('denied');
+                close();
+                updateMyLocationButtonState();
+            },
+            { enableHighAccuracy: true, timeout: 10000 }
+        );
+    }, { once: true });
+
+    declineBtn.addEventListener('click', () => {
+        setLocationPermission('denied');
+        close();
+        updateMyLocationButtonState();
+    }, { once: true });
 }
 
 /**
@@ -415,21 +517,24 @@ function applyPolygonFit(fitState) {
 }
 
 function initMap() {
-    // Start at last saved geolocation, or fall back to New York City
+    // Determine start location based on permission state:
+    //   • permission granted + saved GPS → resume at saved location (no jarring fly)
+    //   • otherwise → Museum of Natural History (pleasant default)
+    const permission = getLocationPermission();
     const savedLocation = getSavedLocation();
-    const fallbackLocation = [40.7128, -74.0060];
-    const startLocation = savedLocation || fallbackLocation;
+    const hasPermission = permission === 'granted';
+    const startLocation = (hasPermission && savedLocation) ? savedLocation : DEFAULT_LOCATION;
 
     // Seed direction location A from saved GPS coordinates (will be
     // overwritten by a live GPS fix once watchPosition fires).
-    if (savedLocation) {
+    if (hasPermission && savedLocation) {
         directionLocations.A = { lat: savedLocation[0], lng: savedLocation[1], label: 'Saved location' };
     }
 
     // When starting from a saved location, jump straight to the target display
     // zoom level so there is no fly animation on load.
     const baseZoom = 14;
-    const startZoom = savedLocation
+    const startZoom = (hasPermission && savedLocation)
         ? baseZoom + (isMobileView() ? 2 : 3)
         : baseZoom;
 
@@ -642,6 +747,11 @@ function initMap() {
 
             L.DomEvent.on(btn, 'click', (e) => {
                 L.DomEvent.preventDefault(e);
+                // No permission — show modal to prompt sharing
+                if (getLocationPermission() !== 'granted') {
+                    showLocationModal();
+                    return;
+                }
                 if (container.classList.contains('locating')) return;
                 if (_isAtMyLocation) return;  // already centered on location
 
@@ -700,10 +810,19 @@ function initMap() {
     new WildPinControl().addTo(map);
 
     // Add OpenStreetMap tile layer (completely free, no API key)
-    L.tileLayer(OSM_TILE_URL, {
+    const tileLayer = L.tileLayer(OSM_TILE_URL, {
         maxZoom: 19,
         attribution: OSM_ATTRIBUTION
     }).addTo(map);
+
+    // Fade map in once tiles are ready (golden-tan bg → map appears)
+    tileLayer.once('load', () => {
+        document.body.classList.remove('map-loading');
+        // After fade-in, show location modal if user hasn't been asked yet
+        if (!getLocationPermission()) {
+            setTimeout(showLocationModal, 900);
+        }
+    });
 
     // Add scale control
     L.control.scale().addTo(map);
@@ -938,80 +1057,13 @@ function initMap() {
     setupPreventPagePinchZoom();
     updateStatus('Ready');
 
-    // --- Smart location handling ------------------------------------------------
-    // 1. Map already started at savedLocation (or NYC fallback) — see above.
-    // 2. If no saved location, try IP geolocation for an approximate start.
-    // 3. GPS watch: compare each fix to the current map center.  Only fly if
-    //    the user has moved more than LOCATION_CHANGE_THRESHOLD meters.
-    // 4. Always persist the latest GPS fix to localStorage.
-    // navigator.geolocation is a free browser API — no API charges.
-
-    let ipLocationApplied = false;   // true once we've used IP location (skip if GPS arrives first)
-
-    // If we have no saved location, try IP geolocation for an approximate start
-    // while waiting for the slower GPS fix.
-    if (!savedLocation) {
-        getIPLocation().then((ipLoc) => {
-            if (!ipLoc || ipLocationApplied) return;
-            // Only apply if GPS hasn't already provided a fix
-            ipLocationApplied = true;
-            directionLocations.A = { lat: ipLoc[0], lng: ipLoc[1], label: 'Approximate location' };
-            const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
-            isLocationSearchZoom = true;
-            map.flyTo(ipLoc, targetZoom, { duration: 1.0 });
-            map.once('moveend', () => {
-                isLocationSearchZoom = false;
-                currentZoomLevel = map.getZoom() - initialZoom;
-                updateZoomLevelIndicator();
-                updateDrawButtonState();
-                updateStatus('Approximate location - Ready');
-            });
-        });
-    }
-
-    if (navigator.geolocation) {
-        let firstFix = true;
-        navigator.geolocation.watchPosition(
-            (position) => {
-                const userLocation = [
-                    position.coords.latitude,
-                    position.coords.longitude
-                ];
-                // Always keep the latest coords available for distance sorting
-                window._userLatLng = userLocation;
-                directionLocations.A = { lat: userLocation[0], lng: userLocation[1], label: 'Your location' };
-                // Persist to localStorage for next session
-                saveLocation(userLocation[0], userLocation[1]);
-
-                if (firstFix) {
-                    firstFix = false;
-                    ipLocationApplied = true; // prevent IP location from overriding GPS
-
-                    // Compare GPS fix to our starting position
-                    const dist = calculateDistance(userLocation, startLocation);
-                    if (dist > LOCATION_CHANGE_THRESHOLD) {
-                        // Significant move — fly to the new location
-                        const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
-                        isLocationSearchZoom = true;
-                        map.flyTo(userLocation, targetZoom, { duration: 1.0 });
-                        map.once('moveend', () => {
-                            isLocationSearchZoom = false;
-                            currentZoomLevel = map.getZoom() - initialZoom;
-                            updateZoomLevelIndicator();
-                            updateDrawButtonState();
-                            updateStatus('Location found - Ready');
-                        });
-                    } else {
-                        // Same area — stay put, no animation
-                        updateStatus('Location found - Ready');
-                    }
-                }
-            },
-            () => {
-                updateStatus('Ready');
-            },
-            { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 }
-        );
+    // --- Permission-gated location handling ------------------------------------
+    // Geolocation only runs if the user has explicitly opted in via our modal.
+    // The modal is shown after map tiles fade in (see tileLayer 'load' handler).
+    if (hasPermission) {
+        startLocationTracking();
+    } else {
+        updateMyLocationButtonState();
     }
 
     updateDrawButtonState();
@@ -1180,8 +1232,12 @@ function updateZoomFitButtonState() {
 function updateMyLocationButtonState() {
     const btn = document.querySelector('.leaflet-control-my-location-btn');
     if (!btn) return;
-    btn.classList.toggle('disabled', _isAtMyLocation);
-    btn.title = _isAtMyLocation ? 'Already at your location' : 'My location';
+    const noPermission = getLocationPermission() !== 'granted';
+    btn.classList.toggle('no-permission', noPermission);
+    btn.classList.toggle('disabled', !noPermission && _isAtMyLocation);
+    btn.title = noPermission
+        ? 'Location sharing not enabled'
+        : (_isAtMyLocation ? 'Already at your location' : 'My location');
 }
 
 // =============================================================================
@@ -1302,6 +1358,16 @@ function setupMobileLayout() {
         if (searchClearBtn) header.insertBefore(searchClearBtn, settingsBtn);
         if (searchBtn) header.insertBefore(searchBtn, settingsBtn);
     }
+
+    // With position:fixed the header is out of flow — Leaflet controls need
+    // to know where the header ends so they sit below it, not behind it.
+    const syncHeaderOffset = () => {
+        if (!header) return;
+        const bottom = header.getBoundingClientRect().bottom + 6; // 6px gap
+        document.documentElement.style.setProperty('--header-bottom', bottom + 'px');
+    };
+    requestAnimationFrame(syncHeaderOffset);
+    window.addEventListener('resize', syncHeaderOffset);
 }
 
 // =============================================================================

@@ -1947,3 +1947,114 @@ body.overlay-active .direction-advanced-panel {
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-tertiary);
 }
+
+/* =============================================================================
+   Map Fade-In (golden-tan bg → map appears)
+   ============================================================================= */
+
+.map-container {
+    transition: opacity 0.8s ease-out;
+}
+
+body.map-loading .map-container {
+    opacity: 0;
+}
+
+/* =============================================================================
+   Location Permission Modal
+   ============================================================================= */
+
+.location-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.location-modal.hidden {
+    display: none;
+}
+
+.location-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+}
+
+.location-modal-card {
+    position: relative;
+    background: var(--bg-primary);
+    border-radius: var(--radius-lg);
+    padding: 32px 28px;
+    max-width: 360px;
+    width: calc(100% - 48px);
+    box-shadow: var(--shadow-lg);
+    text-align: center;
+    animation: locationModalIn 0.35s ease;
+}
+
+@keyframes locationModalIn {
+    from { opacity: 0; transform: scale(0.94) translateY(12px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.location-modal-icon {
+    font-size: 2rem;
+    color: var(--primary-color);
+    margin-bottom: 16px;
+}
+
+.location-modal-text {
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    margin: 0 0 24px;
+}
+
+.location-modal-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.location-modal-btn {
+    padding: 12px 24px;
+    border-radius: var(--radius-sm);
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: background 0.2s ease, border-color 0.2s ease;
+    font-family: inherit;
+}
+
+.location-modal-btn-primary {
+    background: var(--primary-color);
+    color: white;
+    border-color: var(--primary-dark);
+}
+
+.location-modal-btn-primary:hover {
+    background: var(--primary-dark);
+}
+
+.location-modal-btn-secondary {
+    background: transparent;
+    color: var(--text-secondary);
+    border-color: var(--border-color);
+}
+
+.location-modal-btn-secondary:hover {
+    background: var(--bg-secondary);
+}
+
+/* =============================================================================
+   My-Location — no-permission disabled state
+   ============================================================================= */
+
+.leaflet-control-my-location-btn.no-permission {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
