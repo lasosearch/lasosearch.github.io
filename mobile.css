@@ -77,8 +77,8 @@ body.is-mobile .search-clear-btn {
 
 body.is-mobile .filter-sort-controls #clear-filters-btn {
     border: 2px solid var(--border-color);
-    box-shadow: 0 4px 0 var(--border-color);
-    transform: translateY(-2px); /* shift up half the 4px shadow so button+shadow is visually centered */
+    box-shadow: 0 3px 0 var(--border-color);
+    transform: translateY(0);
     transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -274,7 +274,7 @@ body.is-mobile .search-container.has-clear {
     margin-right: calc(2 * var(--row-h) + 16px);
 }
 
-/* Actions row: force to row 2, full width, wraps so filters get row 3 */
+/* Actions row: force to row 2, full width */
 body.is-mobile .header-actions {
     order: 3;
     width: 100%;
@@ -285,42 +285,40 @@ body.is-mobile .header-actions {
     position: relative;
 }
 
-/* Filter/sort row 3 — own line beneath buttons */
+/* Filter/sort controls — inside results sidebar on mobile */
 body.is-mobile .filter-sort-controls {
     display: flex;
-    flex-basis: 100%;
-    order: 10;
     min-width: 0;
-    height: 68px;
     gap: 6px;
     align-items: center;
-    border-radius: var(--radius-sm);
+    border: none;
+    border-bottom: 1px solid var(--border-color);
+    border-radius: 0;
+    background: var(--bg-primary);
+    padding: 8px 12px;
+    flex-shrink: 0;
 }
 
 body.is-mobile .filter-input {
     flex: 1;
     min-width: 0;
     width: auto;
-    height: calc(100% - 10px);
+    height: 36px;
     font-size: 16px;
     box-sizing: border-box;
-}
-
-body.is-mobile .filter-input {
-    padding-top: 14px;
-    padding-bottom: 14px;
+    padding: 0 10px;
 }
 
 body.is-mobile .sort-select {
     font-size: 0.85rem;
     padding: 6px 8px;
-    height: calc(100% - 10px);
+    height: 36px;
     max-width: none;
     box-sizing: border-box;
 }
 
 body.is-mobile .filter-sort-controls #clear-filters-btn {
-    height: calc(100% - 14px); /* subtract 4px shadow so button+shadow matches other elements' visual height */
+    height: 32px;
     padding: 6px 12px;
     font-size: 0.8rem;
     white-space: nowrap;

@@ -1279,6 +1279,20 @@ function getDefaultEmptyStateHTML() {
 }
 
 // =============================================================================
+// Mobile Layout Setup  (only called when mobile)
+// =============================================================================
+function setupMobileLayout() {
+    const sidebar = document.getElementById('results-sidebar');
+    const sidebarContent = sidebar ? sidebar.querySelector('.sidebar-content') : null;
+    const filterControls = document.querySelector('.filter-sort-controls');
+
+    if (!filterControls || !sidebar || !sidebarContent) return;
+
+    // Move filter controls from header into sidebar, above scrollable content
+    sidebar.insertBefore(filterControls, sidebarContent);
+}
+
+// =============================================================================
 // Desktop Layout Setup  (only called when NOT mobile — mobile DOM untouched)
 // =============================================================================
 function setupDesktopLayout() {
@@ -1355,9 +1369,11 @@ document.addEventListener('DOMContentLoaded', () => {
         document.body.classList.add('is-mobile');
     }
 
-    // Rearrange DOM for desktop only (mobile DOM stays exactly as-is)
+    // Rearrange DOM per platform
     if (!document.body.classList.contains('is-mobile')) {
         setupDesktopLayout();
+    } else {
+        setupMobileLayout();
     }
 
     const params = new URLSearchParams(window.location.search);
