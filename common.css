@@ -2058,3 +2058,27 @@ body.map-loading .map-container {
     opacity: 0.35;
     cursor: not-allowed;
 }
+
+/* =============================================================================
+   Settings Credit
+   ============================================================================= */
+
+.settings-credit {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-color);
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--text-tertiary);
+}
+
+.settings-credit a {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.settings-credit a:hover {
+    color: var(--primary-color);
+    text-decoration: underline;
+}
