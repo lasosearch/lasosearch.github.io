@@ -28,6 +28,8 @@ let _clearEpoch = 0;
 // Zoom behavior flags
 let isAutoFittingPolygon = false;
 let _isChangingSelection = false;  // guards popupclose from clearing .active during programmatic popup switches
+let _popupClosedByXButton = false; // true when popup was dismissed via the Leaflet close button (full deselect)
+let _closedByPinTap = false;       // true when closeSidebar was triggered by tapping a pin (reopen popup after fly)
 let isPinchZoom = false;          // true while the user is in continuous pinch/wheel zoom
 let _buttonZoomPending = false;   // transient flag set by +/- button handlers before setZoom
 let isFitZoom = false;
@@ -846,15 +848,22 @@ function initMap() {
     // Wait for fonts/icons to load into memory before fading in the indicator
     document.fonts.ready.then(() => { updateZoomLevelIndicator(); });
 
-    // Clear selection when user manually dismisses a popup (click elsewhere)
+    // Clear selection when user manually dismisses a popup (click elsewhere / close button)
     map.on('popupclose', () => {
-        // Only clear selection on genuine user dismissal (click elsewhere / close button).
         // Skip when we are programmatically switching popups (highlightPlace, zoomstart, etc.)
         if (_isChangingSelection) return;
         if (map._animatingZoom) return;
-        clearHighlightedMarker();
-        selectedPlaceIndex = null;
-        document.querySelectorAll('.place-card.active').forEach(c => c.classList.remove('active'));
+
+        if (_popupClosedByXButton) {
+            // Explicit close via the popup's X button → full deselect
+            _popupClosedByXButton = false;
+            clearHighlightedMarker();
+            selectedPlaceIndex = null;
+            document.querySelectorAll('.place-card.active').forEach(c => c.classList.remove('active'));
+        }
+        // Tap-outside: popup closes but we keep the pin green/enlarged and
+        // selectedPlaceIndex intact so the user can still see which pin was
+        // last selected.  No action needed — just let the popup disappear.
     });
 
     map.on('zoomstart', () => {
@@ -1283,7 +1292,7 @@ function placeWildPin() {
 
     directionLocations.D = { lat, lng, label: 'Wild pin' };
 
-    wildPinMarker.bindPopup(_buildWildPinPopup(lat, lng), { maxWidth: 250, minWidth: 140 });
+    wildPinMarker.bindPopup(_buildWildPinPopup(lat, lng), { maxWidth: 250, minWidth: 140, autoPan: false });
     wildPinMarker.openPopup();
 
     wildPinMarker.on('dragend', () => {
@@ -3724,6 +3733,7 @@ function _pinCenterForOverlay(latLng, targetZoom) {
     if (!mapEl) return latLng;
 
     const fullH = mapEl.offsetHeight;
+    const headerH = getMobileHeaderPad();
     let overlayH = 0;
 
     // Determine overlay height from the current CSS state.
@@ -3734,12 +3744,14 @@ function _pinCenterForOverlay(latLng, targetZoom) {
         overlayH = TOASTER_LIP_HEIGHT;
     }
 
-    if (overlayH <= 0) return latLng;
+    if (overlayH <= 0 && headerH <= 0) return latLng;
 
-    // flyTo centers at fullH/2.  We want the pin at (fullH - overlayH) / 2.
-    // Shift = fullH/2 - (fullH - overlayH)/2 = overlayH / 2 pixels downward
-    // in projection space.
-    const offsetPx = overlayH / 2;
+    // Visible canvas runs from headerH (top, behind fixed header) to
+    // (fullH - overlayH) (bottom, above the toaster).
+    // Its center = (headerH + fullH - overlayH) / 2.
+    // flyTo centers at fullH / 2.
+    // Shift = fullH/2 - (headerH + fullH - overlayH)/2 = (overlayH - headerH) / 2
+    const offsetPx = (overlayH - headerH) / 2;
 
     const ll = latLng instanceof L.LatLng ? latLng : L.latLng(latLng[0], latLng[1]);
     const pinPx = map.project(ll, targetZoom);
@@ -3767,14 +3779,18 @@ function _panToAvailableCanvas(latLng) {
 
     const sidebarRect = sidebar.getBoundingClientRect();
     const mapRect   = mapEl.getBoundingClientRect();
-    const availableH = sidebarRect.top - mapRect.top;
-    if (availableH <= 50 || availableH >= mapEl.offsetHeight - 10) return false;
+    const headerH   = getMobileHeaderPad();
+    // Visible canvas: from header bottom to sidebar top (in container coords)
+    const visibleTop = headerH - mapRect.top;
+    const visibleBottom = sidebarRect.top - mapRect.top;
+    const visibleH = visibleBottom - visibleTop;
+    if (visibleH <= 50) return false;
 
     const pt = map.latLngToContainerPoint(
         latLng instanceof L.LatLng ? latLng : L.latLng(latLng[0], latLng[1])
     );
     const dx = pt.x - mapEl.offsetWidth / 2;
-    const dy = pt.y - availableH / 2;
+    const dy = pt.y - (visibleTop + visibleH / 2);
     if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return false;
 
     map.panBy([dx, dy], { animate: true, duration: 0.25 });
@@ -3786,16 +3802,18 @@ function panToMarkerInView(marker) {
     if (isMobileView()) {
         const sidebar = document.getElementById('results-sidebar');
         const mapEl = document.getElementById('map');
-        if (sidebar && sidebar.classList.contains('open') && mapEl) {
+        if (sidebar && mapEl) {
             const sidebarRect = sidebar.getBoundingClientRect();
             const mapRect = mapEl.getBoundingClientRect();
-            // Exposed canvas = map area above the toaster overlay
-            const availableH = sidebarRect.top - mapRect.top;
-            if (availableH > 50) {
+            const headerH = getMobileHeaderPad();
+            // Visible canvas: from header bottom to sidebar top (in container coords)
+            const visibleTop = headerH - mapRect.top;
+            const visibleBottom = sidebarRect.top - mapRect.top;
+            const visibleH = visibleBottom - visibleTop;
+            if (visibleH > 50) {
                 const markerPoint = map.latLngToContainerPoint(markerLatLng);
-                // Center of the exposed canvas (both axes)
                 const desiredX = mapEl.offsetWidth / 2;
-                const desiredY = mapRect.top + (availableH / 2) - mapRect.top;
+                const desiredY = visibleTop + visibleH / 2;
                 map.panBy([markerPoint.x - desiredX, markerPoint.y - desiredY]);
                 return;
             }
@@ -3877,7 +3895,7 @@ function updateAllMarkers() {
         }).addTo(map);
 
         // Bind full popup initially; popupopen handler swaps to simplified when sidebar is open
-        marker.bindPopup(buildPopupContent(place, index, false), { maxWidth: 250, minWidth: 180 });
+        marker.bindPopup(buildPopupContent(place, index, false), { maxWidth: 250, minWidth: 180, autoPan: false });
 
         marker.placeIndex = index;
         markers.push(marker);
@@ -3898,11 +3916,17 @@ function updateAllMarkers() {
                     document.querySelectorAll('.place-card').forEach(c => c.classList.remove('active'));
                     const card = document.getElementById(`place-card-${index}`);
                     if (card) card.classList.add('active');
+                    _closedByPinTap = true;   // tell closeSidebar to reopen popup after fly
                     closeSidebar();
                 } else {
-                    // Overlay is peeked or hidden: normal pin tap behavior
-                    clearHighlightedMarker();
-                    setMarkerHighlighted(marker, true);
+                    // Overlay is peeked or hidden: normal pin tap behavior.
+                    // If this marker is already highlighted (green+large), just
+                    // open the popup — no shrink-then-grow animation needed.
+                    if (_highlightedMarkerIndex !== index) {
+                        clearHighlightedMarker();
+                        setMarkerHighlighted(marker, true);
+                    }
+                    selectedPlaceIndex = index;
                     _isChangingSelection = true;
                     marker.openPopup();
                     _isChangingSelection = false;
@@ -4918,7 +4942,7 @@ function displayGeocodeResult(result, searchQuery) {
         })
     }).addTo(map);
 
-    marker.bindPopup(_buildSearchPinPopup(result.name || searchQuery, displayAddress, lat, lon, {}) + '<p style="margin:4px 0 0 0;font-size:11px;color:#999;text-align:center;" class="search-pin-loading">Loading details…</p>', { maxWidth: 300, minWidth: 180 });
+    marker.bindPopup(_buildSearchPinPopup(result.name || searchQuery, displayAddress, lat, lon, {}) + '<p style="margin:4px 0 0 0;font-size:11px;color:#999;text-align:center;" class="search-pin-loading">Loading details…</p>', { maxWidth: 300, minWidth: 180, autoPan: false });
 
     // Center map on the red pin when tapped (even if a business pin was selected)
     marker.on('click', () => {
@@ -5626,8 +5650,19 @@ function setupEventListeners() {
     // and attach tap-to-open-sidebar handler.  Handler is on the popup DOM
     // element (not inner content) so it survives content swaps.
     map.on('popupopen', (e) => {
-        if (!isMobileView()) return;
+        // Detect clicks on the Leaflet close button (×) so the popupclose
+        // handler can distinguish "close via X" (full deselect) from
+        // "tap outside" (keep pin green/enlarged).
         const popupDom = e.popup.getElement();
+        if (popupDom) {
+            const closeBtn = popupDom.querySelector('.leaflet-popup-close-button');
+            if (closeBtn && !closeBtn._xBtnWired) {
+                closeBtn._xBtnWired = true;
+                closeBtn.addEventListener('click', () => { _popupClosedByXButton = true; });
+            }
+        }
+
+        if (!isMobileView()) return;
         if (!popupDom) return;
 
         // Swap content based on sidebar state
@@ -5644,11 +5679,19 @@ function setupEventListeners() {
             }
         }
 
-        // Attach handler once per popup DOM element (persists through setContent)
+        // Attach handler once per popup DOM element (persists through setContent).
+        // _popupReadyForTap starts false each time the popup opens; a rAF sets it
+        // true so that the click/touchend from the SAME touch that opened the
+        // popup (pin tap) is ignored — only a SUBSEQUENT tap on the popup itself
+        // triggers openSidebar / highlightPlace.
+        popupDom._popupReadyForTap = false;
+        requestAnimationFrame(() => { popupDom._popupReadyForTap = true; });
+
         if (!popupDom._popupTapHandler) {
             popupDom._popupTapHandler = true;
 
             const tapHandler = (evt) => {
+                if (!popupDom._popupReadyForTap) return; // ignore leaked pin-tap
                 if (evt.target.closest('a')) return; // let links work
                 const content = popupDom.querySelector('.marker-popup');
                 if (!content) return;
@@ -5659,6 +5702,12 @@ function setupEventListeners() {
                     // Open sidebar — openSidebar() detects the open popup and
                     // auto-highlights the card after the transition settles.
                     openSidebar();
+                } else if (isMobileView() && idx === selectedPlaceIndex) {
+                    // Tapping the abridged popup of the already-selected pin
+                    // while sidebar is midway-open: minimize to peeked and
+                    // show the unabridged infobox — same as tapping the pin.
+                    _closedByPinTap = true;
+                    closeSidebar();
                 } else {
                     highlightPlace(idx);
                 }
@@ -6058,8 +6107,8 @@ function openSidebar() {
         //   2. Search location pin    → only if no selected pin AND
         //      _getSidebarRecenterTarget() says 'pin'
         //   3. Polygon fit            → fallback
+        let centeredOnSelected = false;
         if (!isAutoFittingPolygon) {
-            let centeredOnSelected = false;
             if (pendingHighlightIdx !== null && markers.length > 0) {
                 const selectedMarker = markers.find(m => m.placeIndex === pendingHighlightIdx);
                 if (selectedMarker && map.hasLayer(selectedMarker)) {
@@ -6070,9 +6119,15 @@ function openSidebar() {
                     isAutoFittingPolygon = true;
                     map.flyTo(offsetCenter, targetZoom, { duration: 0.5 });
                     const epoch = _clearEpoch;
+                    // Highlight AFTER the flyTo completes — not on
+                    // onSidebarTransitionEnd (~0.3s) which would interrupt
+                    // the fly mid-animation and cancel the zoom change.
+                    // The sidebar transition (~0.3s) always finishes before
+                    // the flyTo (0.5s), so measurements are safe here.
                     map.once('moveend', () => {
                         isAutoFittingPolygon = false;
                         if (_clearEpoch !== epoch) return;
+                        highlightPlace(pendingHighlightIdx);
                     });
                     centeredOnSelected = true;
                 }
@@ -6104,9 +6159,11 @@ function openSidebar() {
 
         // After the sidebar reaches midway, highlight the pending card so the
         // pin centers in the exposed canvas area with its abbreviated popup.
-        if (pendingHighlightIdx !== null) {
+        // When centeredOnSelected is true the flyTo moveend already calls
+        // highlightPlace — calling it here too would fire it twice.
+        if (pendingHighlightIdx !== null && !centeredOnSelected) {
             onSidebarTransitionEnd(() => highlightPlace(pendingHighlightIdx));
-        } else {
+        } else if (pendingHighlightIdx === null) {
             // Recalculate spacers after the toaster transition settles
             onSidebarTransitionEnd(updateResultsSpacer);
         }
@@ -6133,18 +6190,22 @@ function closeSidebar() {
         // When a pin is selected, compute ONE flyTo that uses the lip-peeked
         // zoom level but centers the green pin in the exposed canvas (above the
         // 52px lip).  This avoids the two-step fit → pan visual jolt.
+        //
+        // _closedByPinTap: user tapped the pin itself → reopen popup after fly.
+        // Otherwise (map tap / card selection): keep pin green+large, no popup.
+        const reopenPopup = _closedByPinTap;
+        _closedByPinTap = false;
         if (fitStateLipPeeked && selectedPlaceIndex !== null && markers.length > 0) {
             const selectedMarker = markers.find(m => m.placeIndex === selectedPlaceIndex);
             if (selectedMarker && map.hasLayer(selectedMarker)) {
                 const targetZoom = fitStateLipPeeked.zoom;
                 const pinLatLng = selectedMarker.getLatLng();
-                const mapEl = document.getElementById('map');
-                const mapH = mapEl ? mapEl.offsetHeight : map.getSize().y;
-                // Exposed canvas = map height minus the lip.
-                // Its visual center is (mapH - TOASTER_LIP_HEIGHT) / 2 from top.
-                // Map center is mapH / 2 from top.
-                // Shift = mapCenter - exposedCenter = TOASTER_LIP_HEIGHT / 2
-                const offsetY = TOASTER_LIP_HEIGHT / 2;
+                const headerH = getMobileHeaderPad();
+                // Exposed canvas runs from headerH to (mapH - TOASTER_LIP_HEIGHT).
+                // Its center = (headerH + mapH - TOASTER_LIP_HEIGHT) / 2.
+                // Map center = mapH / 2.
+                // Shift = mapH/2 - (headerH + mapH - lip)/2 = (lip - headerH) / 2
+                const offsetY = (TOASTER_LIP_HEIGHT - headerH) / 2;
                 // Project pin at target zoom, shift down so pin lands at
                 // the center of the exposed canvas, then unproject.
                 const pinPoint = map.project(pinLatLng, targetZoom);
@@ -6160,8 +6221,8 @@ function closeSidebar() {
                 map.once('moveend', () => {
                     isAutoFittingPolygon = false;
                     if (_clearEpoch !== epoch) return;   // clearAll fired — don't resurrect popup
-                    // Open the infobox for the selected pin after the fly completes
-                    if (map.hasLayer(selectedMarker)) {
+                    // Only reopen the infobox if the user tapped the pin (not map tap)
+                    if (reopenPopup && map.hasLayer(selectedMarker)) {
                         _isChangingSelection = true;
                         selectedMarker.openPopup();
                         _isChangingSelection = false;
@@ -6175,7 +6236,8 @@ function closeSidebar() {
         if (_getSidebarRecenterTarget() === 'pin') {
             const targetZoom = fitStateLipPeeked ? fitStateLipPeeked.zoom : map.getZoom();
             const pinLatLng = searchAddressMarker.getLatLng();
-            const offsetY = TOASTER_LIP_HEIGHT / 2;
+            const headerH = getMobileHeaderPad();
+            const offsetY = (TOASTER_LIP_HEIGHT - headerH) / 2;
             const pinPoint = map.project(pinLatLng, targetZoom);
             const mapCenter = map.unproject(
                 L.point(pinPoint.x, pinPoint.y + offsetY),
@@ -6508,7 +6570,14 @@ function setupSheetDragGesture() {
                         isAutoFittingPolygon = true;
                         map.flyTo(oc, tz, { duration: 0.5 });
                         const ep = _clearEpoch;
-                        map.once('moveend', () => { isAutoFittingPolygon = false; if (_clearEpoch !== ep) return; });
+                        // Highlight AFTER flyTo — sidebar transition (~0.3s)
+                        // finishes before flyTo (0.5s) so measurements are safe.
+                        map.once('moveend', () => {
+                            isAutoFittingPolygon = false;
+                            if (_clearEpoch !== ep) return;
+                            sidebar.style.transition = '';
+                            highlightPlace(dragHighlightIdx);
+                        });
                         _sdgOpenCentered = true;
                     }
                 }
@@ -6535,10 +6604,9 @@ function setupSheetDragGesture() {
                     }
                 }
                 // After sidebar settles, highlight the pending card.
-                // Merge highlight + cleanup into ONE callback so the cleanup's
-                // updateResultsSpacer doesn't disrupt the smooth scroll that
-                // highlightPlace starts via centerCardInView.
-                if (dragHighlightIdx !== null) {
+                // When _sdgOpenCentered is true the flyTo moveend already
+                // calls highlightPlace — skip here to avoid double-fire.
+                if (dragHighlightIdx !== null && !_sdgOpenCentered) {
                     snapCleanupRegistered = true;
                     onSidebarTransitionEnd(() => {
                         sidebar.style.transition = '';
@@ -6569,7 +6637,7 @@ function setupSheetDragGesture() {
                     if (selM && map.hasLayer(selM)) {
                         const targetZoom = fitStateLipPeeked.zoom;
                         const pinLatLng = selM.getLatLng();
-                        const offsetY = TOASTER_LIP_HEIGHT / 2;
+                        const offsetY = (TOASTER_LIP_HEIGHT - getMobileHeaderPad()) / 2;
                         const pinPoint = map.project(pinLatLng, targetZoom);
                         const mc = map.unproject(L.point(pinPoint.x, pinPoint.y + offsetY), targetZoom);
                         map.stop();
@@ -6580,11 +6648,9 @@ function setupSheetDragGesture() {
                         map.once('moveend', () => {
                             isAutoFittingPolygon = false;
                             if (_clearEpoch !== epoch) return;
-                            if (map.hasLayer(selM)) {
-                                _isChangingSelection = true;
-                                selM.openPopup();
-                                _isChangingSelection = false;
-                            }
+                            // Drag-to-peeked: keep pin green+large but don't
+                            // reopen the popup — same "remember last selected"
+                            // behavior as closeSidebar when no pin tap occurred.
                         });
                         _sdgPeekedCentered = true;
                     }
@@ -6593,7 +6659,7 @@ function setupSheetDragGesture() {
                     if (_getSidebarRecenterTarget() === 'pin') {
                         const targetZoom = fitStateLipPeeked ? fitStateLipPeeked.zoom : map.getZoom();
                         const pinLatLng = searchAddressMarker.getLatLng();
-                        const offsetY = TOASTER_LIP_HEIGHT / 2;
+                        const offsetY = (TOASTER_LIP_HEIGHT - getMobileHeaderPad()) / 2;
                         const pinPoint = map.project(pinLatLng, targetZoom);
                         const mc = map.unproject(L.point(pinPoint.x, pinPoint.y + offsetY), targetZoom);
                         map.stop();
