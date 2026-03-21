@@ -5,6 +5,8 @@
 .env
 .env.local
 .env.*.local
+.dev.vars
+worker/.dev.vars
 
 # API key source file (user's home directory reference)
 # Note: The actual file is at ~/.google_maps_api.sh (outside repo)

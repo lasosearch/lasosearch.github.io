@@ -16,6 +16,7 @@ let markers = [];
 let selectedPlaceIndex = null;   // index of the currently selected/highlighted place
 let _highlightedMarkerIndex = null; // index of marker shown as enlarged green pin (overlay minimized)
 let wildPinMarker = null;        // draggable indigo pin placed by user (Direction Mode location D)
+let userLocationMarker = null;   // person marker at user's GPS location (shown during searches)
 let isDrawingMode = false;
 let isDrawing = false; // true while mouse is held down
 let isMouseDown = false; // track mouse button state
@@ -144,9 +145,10 @@ const GOOGLE_TYPE_GROUPS = [
     // Food & Drink
     ['restaurant', 'cafe', 'bar', 'bakery', 'meal_delivery', 'meal_takeaway'],
     // Shopping & Retail
-    ['store', 'supermarket', 'shopping_mall', 'convenience_store', 'clothing_store',
-     'electronics_store', 'furniture_store', 'hardware_store', 'home_goods_store',
-     'jewelry_store', 'shoe_store', 'pet_store', 'book_store', 'liquor_store'],
+    ['store', 'supermarket', 'grocery_store', 'shopping_mall', 'convenience_store',
+     'clothing_store', 'electronics_store', 'furniture_store', 'hardware_store',
+     'home_goods_store', 'jewelry_store', 'shoe_store', 'pet_store', 'book_store',
+     'liquor_store'],
     // Services & Health
     ['bank', 'post_office', 'gas_station', 'car_repair', 'car_wash', 'laundry',
      'pharmacy', 'hospital', 'doctor', 'dentist', 'veterinary_care',
@@ -496,11 +498,87 @@ function calculatePolygonFit(polygon, mapObj, padTop, padRight, padBottom, padLe
 }
 
 /**
+ * Compute fit state for category search results, treating result coords
+ * like polygon vertices but anchored on the search-time center.
+ *
+ * The search center stays at the visual center of the available canvas
+ * (viewport minus padding for header/overlay on each edge).  Zoom is
+ * the maximum level where every result pin fits inside that canvas with
+ * equal margin from the center to the nearest edge.
+ *
+ * @param {L.LatLng[]} points        All pins to fit (result pins + user location)
+ * @param {L.Map}      mapObj        Leaflet map instance
+ * @param {number}     padTop        Px reserved at top (header)
+ * @param {number}     padRight      Px reserved at right
+ * @param {number}     padBottom     Px reserved at bottom (overlay)
+ * @param {number}     padLeft       Px reserved at left
+ * @returns {{ center: L.LatLng, zoom: number }}
+ */
+function calculateCategoryFit(points, mapObj, padTop, padRight, padBottom, padLeft) {
+    const size = mapObj.getSize();
+    const refZ = mapObj.getZoom();
+
+    if (points.length === 0) {
+        return { center: mapObj.getCenter(), zoom: refZ };
+    }
+
+    // --- Step 1: project every point at refZ & find bounding extremes ---
+    let minWx = Infinity, maxWx = -Infinity;
+    let minWy = Infinity, maxWy = -Infinity;
+
+    for (const pt of points) {
+        const wp = mapObj.project(pt, refZ);
+        if (wp.x < minWx) minWx = wp.x;
+        if (wp.x > maxWx) maxWx = wp.x;
+        if (wp.y < minWy) minWy = wp.y;
+        if (wp.y > maxWy) maxWy = wp.y;
+    }
+
+    const contentW = maxWx - minWx;
+    const contentH = maxWy - minWy;
+
+    // --- Step 2: available canvas area ---
+    const availW = size.x - padLeft - padRight;
+    const availH = size.y - padTop  - padBottom;
+
+    if (availW <= 0 || availH <= 0) {
+        const mid = mapObj.unproject(L.point((minWx + maxWx) / 2, (minWy + maxWy) / 2), refZ);
+        return { center: mid, zoom: refZ };
+    }
+
+    if (contentW === 0 && contentH === 0) {
+        // All points coincide — center on them, keep current zoom
+        return { center: points[0], zoom: refZ };
+    }
+
+    // --- Step 3: scale factor to fit content into available area ---
+    const scale = Math.min(
+        contentW > 0 ? availW / contentW : Infinity,
+        contentH > 0 ? availH / contentH : Infinity
+    );
+    const targetZoom = refZ + Math.log2(scale);
+
+    // --- Step 4: center on content midpoint, offset for asymmetric padding ---
+    const midWx = (minWx + maxWx) / 2;
+    const midWy = (minWy + maxWy) / 2;
+    const contentCenter = mapObj.unproject(L.point(midWx, midWy), refZ);
+
+    const offsetX = (padRight  - padLeft) / 2;
+    const offsetY = (padBottom - padTop)  / 2;
+    const ccAtTarget = mapObj.project(contentCenter, targetZoom);
+    const mapCenter  = mapObj.unproject(
+        L.point(ccAtTarget.x + offsetX, ccAtTarget.y + offsetY), targetZoom
+    );
+
+    return { center: mapCenter, zoom: Math.round(targetZoom * 100) / 100 };
+}
+
+/**
  * Apply a previously-computed polygon fit state ({ center, zoom }).
  * Handles isAutoFittingPolygon flag for the duration of the fly animation.
  */
 function applyPolygonFit(fitState) {
-    if (!fitState || !currentPolygon) return;
+    if (!fitState) return;
     // Skip if we're already at this exact fit state
     if (isFitZoom && activeFitState === fitState) return;
     map.stop();                        // cancel any in-progress fly animation
@@ -736,7 +814,10 @@ function initMap() {
                 directionLocations.A = { lat: loc[0], lng: loc[1], label: 'Your location' };
                 isLocationSearchZoom = true;
                 const targetZoom = 14 + (isMobileView() ? 2 : 3);
-                map.flyTo(loc, targetZoom, { duration: 0.8 });
+                // Offset the fly target so the GPS point lands in the visible
+                // canvas (above overlay), not at absolute map center.
+                const flyTarget = _pinCenterForOverlay(loc, targetZoom);
+                map.flyTo(flyTarget, targetZoom, { duration: 0.8 });
                 const finalize = () => {
                     if (_myLocEpoch !== epoch) return; // interrupted by another action
                     _isAtMyLocation = true;
@@ -749,6 +830,7 @@ function initMap() {
                 map.once('moveend', () => {
                     if (_myLocEpoch !== epoch) { isLocationSearchZoom = false; return; }
                     isLocationSearchZoom = false;
+                    // Fine-tune with DOM measurements (tiny correction if any)
                     if (_panToAvailableCanvas(loc)) {
                         map.once('moveend', () => {
                             if (_myLocEpoch !== epoch) return;
@@ -1341,6 +1423,57 @@ function _buildWildPinPopup(lat, lng) {
 }
 
 // =============================================================================
+// User Location Marker — person icon at GPS position (shown during searches)
+// =============================================================================
+
+function addUserLocationMarker() {
+    const loc = window._userLatLng;
+    if (!loc) return;
+
+    // Remove existing marker if present
+    if (userLocationMarker && map.hasLayer(userLocationMarker)) {
+        map.removeLayer(userLocationMarker);
+    }
+
+    const lat = loc[0];
+    const lng = loc[1];
+
+    userLocationMarker = L.marker([lat, lng], {
+        icon: L.divIcon({
+            className: 'user-location-marker',
+            html: '<div style="width:36px;height:36px;border-radius:50%;background:#10b981;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.35);border:2px solid #fff;">'
+                + '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="white">'
+                + '<path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>'
+                + '</svg></div>',
+            iconSize: [36, 36],
+            iconAnchor: [18, 18]
+        }),
+        interactive: true,
+        zIndexOffset: 900
+    }).addTo(map);
+
+    const coordStr = lat.toFixed(5) + ', ' + lng.toFixed(5);
+    userLocationMarker.bindPopup(
+        '<div style="text-align:center;">'
+            + '<div style="font-size:15px;font-weight:600;color:#202124;margin-bottom:4px;">You!</div>'
+            + '<div style="font-size:11px;color:#888;">' + coordStr + '</div>'
+        + '</div>',
+        { maxWidth: 200, minWidth: 100, autoPan: false }
+    );
+
+    userLocationMarker.on('click', () => {
+        userLocationMarker.openPopup();
+    });
+}
+
+function removeUserLocationMarker() {
+    if (userLocationMarker) {
+        if (map.hasLayer(userLocationMarker)) map.removeLayer(userLocationMarker);
+        userLocationMarker = null;
+    }
+}
+
+// =============================================================================
 // Platform-specific empty state (desktop shows placeholder; mobile unchanged)
 // =============================================================================
 function getDefaultEmptyStateHTML() {
@@ -1561,11 +1694,12 @@ function drawClear() {
     // Remove polygon
     removeCurrentPolygon();
 
-    // Stray-layer sweep — preserve searchAddressMarker, wildPinMarker and the tile layer
+    // Stray-layer sweep — preserve searchAddressMarker, wildPinMarker, userLocationMarker and the tile layer
     const strayLayers = [];
     map.eachLayer(layer => {
         if (layer === searchAddressMarker) return;
         if (layer === wildPinMarker) return;
+        if (layer === userLocationMarker) return;
         if (layer instanceof L.Marker || layer instanceof L.Popup) {
             strayLayers.push(layer);
         }
@@ -2082,6 +2216,9 @@ function _getSidebarRecenterTarget() {
     const hasPin = searchAddressMarker && map.hasLayer(searchAddressMarker);
     const hasPoly = !!currentPolygon;
 
+    // Category search fit states take priority over stale mega pin
+    if (!hasPoly && fitStateResultsOpen) return 'polygon';
+
     if (!hasPin && !hasPoly) return 'polygon';
     if (!hasPin) return 'polygon';
     if (!hasPoly) return 'pin';
@@ -2424,8 +2561,14 @@ function parsePlaceFiltersFromInput(value) {
 }
 
 function getActivePriorityCenter() {
-    if (searchPinCoords) return searchPinCoords;
-    // Use map center at time of search as distance basis
+    // 1. Mega pin: search address marker exists AND is inside the drawn shape
+    if (searchPinCoords && drawingPoints.length >= 3
+        && pointInPolygon(searchPinCoords, drawingPoints)) {
+        return searchPinCoords;
+    }
+    // 2. Current GPS location
+    if (window._userLatLng) return window._userLatLng;
+    // 3. Fallback: map center
     const c = map.getCenter();
     return [c.lat, c.lng];
 }
@@ -2450,6 +2593,8 @@ function compareByRating(a, b) {
 }
 
 function applyFiltersAndSort({ resetToFirstPage = true } = {}) {
+    // Recompute distance origin each time (GPS may have updated since search)
+    lastPriorityCenter = getActivePriorityCenter();
     const center = lastPriorityCenter;
     const hasFilter = activePlaceFilters.length > 0;
 
@@ -2786,6 +2931,9 @@ async function performLasoSearch() {
             applyPolygonFit(fitStateResultsOpen);
         }
 
+        // Place person marker at user's GPS location
+        addUserLocationMarker();
+
         // Show sidebar (toaster on mobile) AFTER the polygon is fitted.
         openSidebar();
 
@@ -3032,16 +3180,12 @@ async function searchPlacesWithGoogle(polygonPoints, progressCallback) {
     const circle = polygonToBoundingCircle(polygonPoints);
     if (!circle) throw new Error('Could not compute search area from polygon');
 
-    console.log(`[Google Places] Search area: ${circle.radius.toFixed(0)}m radius around [${circle.center.latitude.toFixed(5)}, ${circle.center.longitude.toFixed(5)}]`);
-
     if (progressCallback) progressCallback('Searching Google Places...');
 
-    // Limit type groups to the guard's cap (prevents abuse via expanded groups)
     const typeGroups = GOOGLE_TYPE_GROUPS.slice(0, _searchGuard.getMaxTypeGroups());
 
     // Make parallel requests for each type group
     const promises = typeGroups.map((types, i) => {
-        console.log(`[Google Places] Querying group ${i + 1}/${typeGroups.length}: ${types.slice(0, 3).join(', ')}...`);
         return fetchNearbyPlaces(types, circle);
     });
 
@@ -3053,7 +3197,6 @@ async function searchPlacesWithGoogle(polygonPoints, progressCallback) {
     for (let i = 0; i < results.length; i++) {
         const batch = results[i];
         totalRaw += batch.length;
-        console.log(`[Google Places] Group ${i + 1} returned ${batch.length} places`);
         for (const place of batch) {
             if (place.place_id && !placeMap.has(place.place_id)) {
                 placeMap.set(place.place_id, place);
@@ -3080,7 +3223,7 @@ async function searchPlacesWithGoogle(polygonPoints, progressCallback) {
  * Fetch up to 20 places from Google Nearby Search for a set of types.
  * Returns normalized place objects ready for display.
  */
-async function fetchNearbyPlaces(includedTypes, circle) {
+async function fetchNearbyPlaces(includedTypes, circle, rankPreference = 'POPULARITY') {
     // Defence-in-depth: independently validate circle radius at the fetch boundary
     if (!_searchGuard.validateCircleRadius(circle.radius)) {
         console.warn('[Google Places] Circle radius exceeds limit — blocked');
@@ -3103,7 +3246,7 @@ async function fetchNearbyPlaces(includedTypes, circle) {
                 includedTypes: includedTypes,
                 locationRestriction: { circle: circle },
                 maxResultCount: 20,
-                rankPreference: 'POPULARITY'
+                rankPreference: rankPreference
             })
         });
 
@@ -3122,7 +3265,7 @@ async function fetchNearbyPlaces(includedTypes, circle) {
         const data = await response.json();
         if (!data.places || data.places.length === 0) return [];
 
-        console.log(`[Google Places] ✓ Received ${data.places.length} places`);
+        const permClosed = data.places.filter(gp => gp.businessStatus === 'CLOSED_PERMANENTLY');
 
         return data.places
             .filter(gp => gp.businessStatus !== 'CLOSED_PERMANENTLY')
@@ -3163,6 +3306,91 @@ async function fetchNearbyPlaces(includedTypes, circle) {
 }
 
 /**
+ * Search for places by free-text query using Google Places Text Search (New).
+ * Used for category searches ("tacos") and business name searches ("Trader Joes").
+ *
+ * @param {string} textQuery  — the search term (e.g. "tacos", "Trader Joes")
+ * @param {{lat: number, lng: number}} center — location bias center
+ * @param {number} radiusM   — bias radius in metres (default 8000 ≈ 5 miles)
+ * @param {number} maxResults — max results to return (1–20, default 5)
+ * @returns {Array} normalized place objects (same shape as fetchNearbyPlaces)
+ */
+async function fetchTextSearchPlaces(textQuery, center, radiusM = 8000, maxResults = 5) {
+    if (!canMakeGooglePlacesCall()) {
+        console.warn('[Google Text Search] Daily limit reached — skipping');
+        return [];
+    }
+
+    try {
+        const response = await fetch(LASO_PROXY_URL + '/textsearch', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Goog-FieldMask': GOOGLE_FIELD_MASK
+            },
+            body: JSON.stringify({
+                textQuery: textQuery,
+                locationBias: {
+                    circle: {
+                        center: { latitude: center.lat, longitude: center.lng },
+                        radius: radiusM
+                    }
+                },
+                maxResultCount: Math.min(maxResults, 20)
+            })
+        });
+
+        _recordGoogleApiCall();
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`[Google Text Search] Failed (${response.status}):`, errorText);
+            return [];
+        }
+
+        const data = await response.json();
+        if (!data.places || data.places.length === 0) return [];
+
+        const permClosed = data.places.filter(gp => gp.businessStatus === 'CLOSED_PERMANENTLY');
+
+        return data.places
+            .filter(gp => gp.businessStatus !== 'CLOSED_PERMANENTLY')
+            .map(gp => {
+                const rating = gp.rating || null;
+                const userRatingCount = gp.userRatingCount || 0;
+                const googleMapsUri = gp.googleMapsUri || null;
+                const displayName = gp.displayName ? gp.displayName.text : null;
+
+                return {
+                    place_id: gp.id || '',
+                    name: displayName || 'Unnamed Place',
+                    address: gp.formattedAddress || 'Address not available',
+                    coordinates: gp.location
+                        ? [gp.location.latitude, gp.location.longitude]
+                        : null,
+                    place_type: gp.primaryTypeDisplayName
+                        ? gp.primaryTypeDisplayName.text
+                        : (gp.primaryType || 'Business').replace(/_/g, ' '),
+                    rating: rating,
+                    userRatingCount: userRatingCount,
+                    phone: gp.internationalPhoneNumber || null,
+                    website: gp.websiteUri || null,
+                    googleMapsUri: googleMapsUri,
+                    google: {
+                        rating: rating,
+                        userRatingCount: userRatingCount,
+                        googleMapsUri: googleMapsUri,
+                        displayName: displayName
+                    }
+                };
+            });
+    } catch (err) {
+        console.error('[Google Text Search] Fetch error:', err);
+        return [];
+    }
+}
+
+/**
  * Verify the Google Places API key is configured and reachable.
  * Logs the result to the console for debugging.
  */
@@ -3195,8 +3423,6 @@ async function verifyGoogleApiKey() {
                 maxResultCount: 1
             })
         });
-
-        _recordGoogleApiCall();
 
         if (response.ok) {
             console.log('[Google Places] ✓ Proxy verified — connection successful');
@@ -3844,6 +4070,7 @@ function updateAllMarkers() {
     map.eachLayer(layer => {
         if (layer === searchAddressMarker) return;          // keep red pin
         if (layer === wildPinMarker) return;               // keep wild pin
+        if (layer === userLocationMarker) return;           // keep person marker
         if (layer instanceof L.TileLayer) return;           // keep tiles
         if (markers.includes(layer)) return;                // keep tracked drawing points
         if (layer instanceof L.Polygon || layer instanceof L.Polyline) return; // keep polygon
@@ -3909,8 +4136,10 @@ function updateAllMarkers() {
                     // Overlay at midway: minimize it, fit polygon, then the
                     // applyPolygonFit moveend handler will center on the pin
                     // and open the full popup once the fit animation completes.
-                    clearHighlightedMarker();
-                    setMarkerHighlighted(marker, true);
+                    if (_highlightedMarkerIndex !== index) {
+                        clearHighlightedMarker();
+                        setMarkerHighlighted(marker, true);
+                    }
                     selectedPlaceIndex = index;
                     // Mark card active so it's highlighted when overlay reopens
                     document.querySelectorAll('.place-card').forEach(c => c.classList.remove('active'));
@@ -4138,7 +4367,6 @@ function recenterActiveCard() {
 }
 
 function highlightPlace(index) {
-    console.log(`[highlightPlace] index=${index} caller=${new Error().stack.split('\n')[2]?.trim()}`);
     _isChangingSelection = true;
     selectedPlaceIndex = index;
 
@@ -4170,7 +4398,9 @@ function highlightPlace(index) {
         // position so the exposed area can be measured correctly.
         const showMarker = () => {
             // Revert any previous green marker, then highlight the new one
-            clearHighlightedMarker();
+            // — but skip the animation if this marker is already highlighted.
+            const alreadyHighlighted = (_highlightedMarkerIndex === index);
+            if (!alreadyHighlighted) clearHighlightedMarker();
             let marker = markers.find(m => m.placeIndex === index);
             // If no blue marker (suppressed mega pin), use the red search pin.
             // Compare by object reference — immune to stale-index bugs.
@@ -4181,7 +4411,7 @@ function highlightPlace(index) {
 
             if (marker) {
                 // Don't change the red search pin's icon — only highlight blue markers
-                if (!isMegaPinFallback) setMarkerHighlighted(marker, true);
+                if (!isMegaPinFallback && !alreadyHighlighted) setMarkerHighlighted(marker, true);
                 if (isMobileView()) {
                     const sidebar = document.getElementById('results-sidebar');
                     const isOpen = sidebar && sidebar.classList.contains('open');
@@ -4396,18 +4626,18 @@ const _CATEGORY_MAP = {
     'cocktails':    { filter: '["amenity"="bar"]', label: 'cocktail bar' },
 
     // ── Amenities ──
-    'gas station':  { filter: '["amenity"="fuel"]', label: 'gas station' },
-    'gas':          { filter: '["amenity"="fuel"]', label: 'gas station' },
-    'fuel':         { filter: '["amenity"="fuel"]', label: 'gas station' },
-    'pharmacy':     { filter: '["amenity"="pharmacy"]', label: 'pharmacy' },
-    'hospital':     { filter: '["amenity"="hospital"]', label: 'hospital' },
-    'bank':         { filter: '["amenity"="bank"]', label: 'bank' },
+    'gas station':  { filter: '["amenity"="fuel"]', label: 'gas station', googleTypes: ['gas_station'] },
+    'gas':          { filter: '["amenity"="fuel"]', label: 'gas station', googleTypes: ['gas_station'] },
+    'fuel':         { filter: '["amenity"="fuel"]', label: 'gas station', googleTypes: ['gas_station'] },
+    'pharmacy':     { filter: '["amenity"="pharmacy"]', label: 'pharmacy', googleTypes: ['pharmacy'] },
+    'hospital':     { filter: '["amenity"="hospital"]', label: 'hospital', googleTypes: ['hospital'] },
+    'bank':         { filter: '["amenity"="bank"]', label: 'bank', googleTypes: ['bank'] },
     'atm':          { filter: '["amenity"="atm"]', label: 'ATM' },
-    'gym':          { filter: '["leisure"="fitness_centre"]', label: 'gym' },
-    'park':         { filter: '["leisure"="park"]', label: 'park' },
-    'library':      { filter: '["amenity"="library"]', label: 'library' },
-    'post office':  { filter: '["amenity"="post_office"]', label: 'post office' },
-    'school':       { filter: '["amenity"~"school"]', label: 'school' },
+    'gym':          { filter: '["leisure"="fitness_centre"]', label: 'gym', googleTypes: ['gym'] },
+    'park':         { filter: '["leisure"="park"]', label: 'park', googleTypes: ['park'] },
+    'library':      { filter: '["amenity"="library"]', label: 'library', googleTypes: ['library'] },
+    'post office':  { filter: '["amenity"="post_office"]', label: 'post office', googleTypes: ['post_office'] },
+    'school':       { filter: '["amenity"~"school"]', label: 'school', googleTypes: ['school'] },
     'church':       { filter: '["amenity"="place_of_worship"]["religion"="christian"]', label: 'church' },
     'mosque':       { filter: '["amenity"="place_of_worship"]["religion"="muslim"]', label: 'mosque' },
     'synagogue':    { filter: '["amenity"="place_of_worship"]["religion"="jewish"]', label: 'synagogue' },
@@ -4419,16 +4649,17 @@ const _CATEGORY_MAP = {
     'playground':   { filter: '["leisure"="playground"]', label: 'playground' },
 
     // ── Shops ──
-    'grocery':      { filter: '["shop"~"supermarket|grocery|convenience"]', label: 'grocery store' },
-    'supermarket':  { filter: '["shop"="supermarket"]', label: 'supermarket' },
-    'convenience store': { filter: '["shop"="convenience"]', label: 'convenience store' },
-    'hardware':     { filter: '["shop"="hardware"]', label: 'hardware store' },
-    'bookstore':    { filter: '["shop"="books"]', label: 'bookstore' },
-    'bakery':       { filter: '["shop"="bakery"]', label: 'bakery' },
+    'grocery':      { filter: '["shop"~"supermarket|grocery|convenience"]', label: 'grocery store', googleTypes: ['grocery_store', 'supermarket'] },
+    'grocery store': { filter: '["shop"~"supermarket|grocery|convenience"]', label: 'grocery store', googleTypes: ['grocery_store', 'supermarket'] },
+    'supermarket':  { filter: '["shop"="supermarket"]', label: 'supermarket', googleTypes: ['supermarket', 'grocery_store'] },
+    'convenience store': { filter: '["shop"="convenience"]', label: 'convenience store', googleTypes: ['convenience_store'] },
+    'hardware':     { filter: '["shop"="hardware"]', label: 'hardware store', googleTypes: ['hardware_store'] },
+    'bookstore':    { filter: '["shop"="books"]', label: 'bookstore', googleTypes: ['book_store'] },
+    'bakery':       { filter: '["shop"="bakery"]', label: 'bakery', googleTypes: ['bakery'] },
     'butcher':      { filter: '["shop"="butcher"]', label: 'butcher' },
     'florist':      { filter: '["shop"="florist"]', label: 'florist' },
-    'pet store':    { filter: '["shop"="pet"]', label: 'pet store' },
-    'liquor store': { filter: '["shop"="alcohol"]', label: 'liquor store' },
+    'pet store':    { filter: '["shop"="pet"]', label: 'pet store', googleTypes: ['pet_store'] },
+    'liquor store': { filter: '["shop"="alcohol"]', label: 'liquor store', googleTypes: ['liquor_store'] },
     'thrift store': { filter: '["shop"~"second_hand|charity"]', label: 'thrift store' },
     'clothing':     { filter: '["shop"="clothes"]', label: 'clothing store' },
     'shoes':        { filter: '["shop"="shoes"]', label: 'shoe store' },
@@ -4438,18 +4669,18 @@ const _CATEGORY_MAP = {
     'laundromat':   { filter: '["shop"="laundry"]', label: 'laundromat' },
     'laundry':      { filter: '["shop"="laundry"]', label: 'laundromat' },
     'car wash':     { filter: '["amenity"="car_wash"]', label: 'car wash' },
-    'dentist':      { filter: '["amenity"="dentist"]', label: 'dentist' },
-    'doctor':       { filter: '["amenity"~"doctors|clinic"]', label: 'doctor' },
-    'veterinarian': { filter: '["amenity"="veterinary"]', label: 'veterinarian' },
-    'vet':          { filter: '["amenity"="veterinary"]', label: 'veterinarian' },
-    'hair salon':   { filter: '["shop"="hairdresser"]', label: 'hair salon' },
+    'dentist':      { filter: '["amenity"="dentist"]', label: 'dentist', googleTypes: ['dentist'] },
+    'doctor':       { filter: '["amenity"~"doctors|clinic"]', label: 'doctor', googleTypes: ['doctor'] },
+    'veterinarian': { filter: '["amenity"="veterinary"]', label: 'veterinarian', googleTypes: ['veterinary_care'] },
+    'vet':          { filter: '["amenity"="veterinary"]', label: 'veterinarian', googleTypes: ['veterinary_care'] },
+    'hair salon':   { filter: '["shop"="hairdresser"]', label: 'hair salon', googleTypes: ['hair_care'] },
     'barber':       { filter: '["shop"="hairdresser"]', label: 'barber' },
     'nail salon':   { filter: '["shop"~"beauty|nails"]', label: 'nail salon' },
     'spa':          { filter: '["leisure"~"spa|sauna"]', label: 'spa' },
-    'hotel':        { filter: '["tourism"="hotel"]', label: 'hotel' },
-    'motel':        { filter: '["tourism"="motel"]', label: 'motel' },
-    'movie theater':{ filter: '["amenity"="cinema"]', label: 'movie theater' },
-    'cinema':       { filter: '["amenity"="cinema"]', label: 'movie theater' },
+    'hotel':        { filter: '["tourism"="hotel"]', label: 'hotel', googleTypes: ['hotel'] },
+    'motel':        { filter: '["tourism"="motel"]', label: 'motel', googleTypes: ['hotel'] },
+    'movie theater':{ filter: '["amenity"="cinema"]', label: 'movie theater', googleTypes: ['movie_theater'] },
+    'cinema':       { filter: '["amenity"="cinema"]', label: 'movie theater', googleTypes: ['movie_theater'] },
     'museum':       { filter: '["tourism"="museum"]', label: 'museum' },
     'restaurant':   { filter: '["amenity"="restaurant"]', label: 'restaurant' },
     'fast food':    { filter: '["amenity"="fast_food"]', label: 'fast food' },
@@ -4469,7 +4700,18 @@ function _matchCategory(query) {
     q = q.replace(_CATEGORY_STRIP_RE, '').trim();
     // Also strip a second pass (e.g. "sushi restaurant near me" → "sushi restaurant" → "sushi")
     q = q.replace(_CATEGORY_STRIP_RE, '').trim();
-    return _CATEGORY_MAP[q] || null;
+    if (_CATEGORY_MAP[q]) return _CATEGORY_MAP[q];
+    // Handle plurals: "groceries" → "grocery", "pharmacies" → "pharmacy"
+    if (q.endsWith('ies')) {
+        const singular = q.slice(0, -3) + 'y';
+        if (_CATEGORY_MAP[singular]) return _CATEGORY_MAP[singular];
+    }
+    // Handle plurals: "supermarkets" → "supermarket", "banks" → "bank"
+    if (q.endsWith('s') && !q.endsWith('ss')) {
+        const singular = q.slice(0, -1);
+        if (_CATEGORY_MAP[singular]) return _CATEGORY_MAP[singular];
+    }
+    return null;
 }
 
 /**
@@ -4631,26 +4873,165 @@ async function searchAddress() {
     const center = _getUserLocation();
 
     // ── Category search (e.g. "sushi", "gas station", "coffee near me") ──
-    // Generic terms are searched via Overpass (OSM tag match) instead of
-    // geocoding, which would just look for a place NAMED "sushi".
+    // Generic terms are searched via Google Text Search to get up to 5
+    // nearby results with ratings.  Falls back to Overpass if Google quota
+    // is exhausted.
     const categoryMatch = _matchCategory(address);
     if (categoryMatch) {
-        showLoading(true, `Finding nearest ${categoryMatch.label}...`);
-        updateStatus(`Searching for nearest ${categoryMatch.label}...`, true);
+        showLoading(true, `Finding nearby ${categoryMatch.label}...`);
+        updateStatus(`Searching for nearby ${categoryMatch.label}...`, true);
+
+        // Try Google first (Nearby Search with DISTANCE for typed categories,
+        // Text Search for cuisine/generic categories).  Uses 1 API call either way.
+        if (canMakeGooglePlacesCall()) {
+            try {
+                const mapCenter = map.getCenter();
+                // Use GPS location (not map center) as the origin for search
+                // and distance filtering — the user wants places near THEM.
+                const searchOrigin = center; // _getUserLocation() result
+                let nearby;
+
+                const MAX_CAT_DIST = 1600; // 1.3 miles hard cutoff (straight-line)
+
+                if (categoryMatch.googleTypes) {
+                    // Typed category (grocery, bank, pharmacy, etc.)
+                    // → Nearby Search with DISTANCE ranking = truly closest results
+                    const circle = {
+                        center: { latitude: searchOrigin.lat, longitude: searchOrigin.lng },
+                        radius: MAX_CAT_DIST
+                    };
+
+                    const nearbyResults = await fetchNearbyPlaces(
+                        categoryMatch.googleTypes, circle, 'DISTANCE'
+                    );
+                    // Hard distance cutoff from user's location
+                    nearby = nearbyResults.filter(r => {
+                        if (!r.coordinates) return false;
+                        const d = calculateDistance(
+                            [searchOrigin.lat, searchOrigin.lng],
+                            [r.coordinates[0], r.coordinates[1]]
+                        );
+                        r._distFromCenter = d;
+                        return d <= MAX_CAT_DIST;
+                    });
+                } else {
+                    // Cuisine/generic category (sushi, tacos, etc.)
+                    // → Text Search with locationBias (Google picks relevance)
+                    const textResults = await fetchTextSearchPlaces(
+                        categoryMatch.label,
+                        { lat: searchOrigin.lat, lng: searchOrigin.lng },
+                        MAX_CAT_DIST,
+                        20
+                    );
+                    // Hard distance filter from user's location
+                    nearby = textResults.filter(r => {
+                        if (!r.coordinates) return false;
+                        const d = calculateDistance(
+                            [searchOrigin.lat, searchOrigin.lng],
+                            [r.coordinates[0], r.coordinates[1]]
+                        );
+                        r._distFromCenter = d;
+                        return d <= MAX_CAT_DIST;
+                    });
+                }
+
+                if (nearby.length > 0) {
+                    // Sort by rating descending (highest-rated first)
+                    nearby.sort((a, b) => {
+                        const ra = typeof a.rating === 'number' ? a.rating : -Infinity;
+                        const rb = typeof b.rating === 'number' ? b.rating : -Infinity;
+                        if (ra !== rb) return rb - ra;
+                        return (b.userRatingCount || 0) - (a.userRatingCount || 0);
+                    });
+                    // Cap to 10 results after sorting
+                    nearby = nearby.slice(0, 10);
+
+
+
+                    _lastSearchedAddress = normAddr;
+                    _lastSearchLocation = { ...center };
+
+                    // Display using the same sidebar pipeline as draw search
+                    const priorityCenter = [searchOrigin.lat, searchOrigin.lng];
+                    lastPriorityCenter = priorityCenter;
+                    unfilteredSearchResults = nearby;
+                    activeSortMode = 'rating'; // default to rating sort for categories
+                    populateTypeDatalistFromResults(nearby);
+                    syncFilterSortUIState();
+                    applyFiltersAndSort({ resetToFirstPage: true });
+                    // Compute fit states using the same vertex-projection
+                    // technique as calculatePolygonFit.  Result coords are
+                    // treated like polygon vertices; the search-time center
+                    // stays anchored at the visual center of the available
+                    // canvas for each overlay state.
+                    // All pins to fit: result pins + user location pin
+                    const allPoints = nearby
+                        .filter(p => p.coordinates)
+                        .map(p => L.latLng(p.coordinates[0], p.coordinates[1]));
+                    allPoints.push(L.latLng(searchOrigin.lat, searchOrigin.lng));
+
+                    if (isMobileView() && allPoints.length > 1) {
+                        const mapEl = document.getElementById('map');
+                        const fullH = mapEl ? mapEl.offsetHeight : 0;
+                        const headerH = getMobileHeaderPad();
+                        map.invalidateSize({ animate: false });
+
+                        // State 1: results-open (overlay covers bottom half)
+                        const openOverlayH = fullH * 0.5;
+                        const openFit = calculateCategoryFit(
+                            allPoints, map,
+                            20 + headerH, 20, openOverlayH + 20, 20
+                        );
+                        fitStateResultsOpen = openFit;
+
+                        // State 2: lip-peeked (52px lip at bottom)
+                        const peekFit = calculateCategoryFit(
+                            allPoints, map,
+                            20 + headerH, 20, TOASTER_LIP_HEIGHT + 20, 20
+                        );
+                        fitStateLipPeeked = peekFit;
+
+                        // Apply results-open fit before sidebar slides in
+                        applyPolygonFit(fitStateResultsOpen);
+                    } else if (allPoints.length > 1) {
+                        // Desktop: no overlay padding, just edge margins
+                        const fit = calculateCategoryFit(
+                            allPoints, map, 20, 20, 20, 20
+                        );
+                        if (fit.zoom < map.getZoom()) {
+                            map.setView(fit.center, fit.zoom, { animate: true });
+                        }
+                    }
+
+                    // Place person marker at user's GPS location
+                    addUserLocationMarker();
+
+                    openSidebar();
+
+                    updateStatus(`Found ${nearby.length} ${categoryMatch.label} nearby`);
+                    showLoading(false);
+                    return;
+                }
+                console.log(`[searchAddress] Category "${categoryMatch.label}" — no Google results nearby, trying Overpass`);
+            } catch (e) {
+                console.warn('[searchAddress] Google category search failed, trying Overpass:', e);
+            }
+        }
+
+        // Fallback: Overpass (no ratings, single closest result)
         try {
             const poiResult = await _searchNearestPOI(categoryMatch, center.lat, center.lng);
             if (poiResult) {
-                console.log(`[searchAddress] Category match "${address}" → ${categoryMatch.label}: "${poiResult.name}" [${poiResult.lat}, ${poiResult.lon}]`);
+                console.log(`[searchAddress] Category fallback "${address}" → ${categoryMatch.label}: "${poiResult.name}" [${poiResult.lat}, ${poiResult.lon}]`);
                 _lastSearchedAddress = normAddr;
                 _lastSearchLocation = { ...center };
                 showLoading(false);
                 displayGeocodeResult(poiResult, address);
                 return;
             }
-            // No POI found within radius — fall through to normal geocoding
-            console.log(`[searchAddress] Category "${categoryMatch.label}" — no Overpass results, falling through to geocoder`);
+            console.log(`[searchAddress] Category "${categoryMatch.label}" — no Overpass results either, falling through to geocoder`);
         } catch (e) {
-            console.warn('[searchAddress] Category search failed, falling through:', e);
+            console.warn('[searchAddress] Overpass category search also failed, falling through:', e);
         }
     }
 
@@ -4658,6 +5039,63 @@ async function searchAddress() {
     updateStatus('Searching for address...', true);
 
     try {
+        // ── Business name search (e.g. "Trader Joes", "Starbucks") ──
+        // For non-address queries, Google Text Search is far more reliable
+        // than Nominatim/Photon at finding the nearest matching business.
+        // Use the map center as the bias point so results are near where
+        // the user is looking, not where GPS last fixed.
+        if (!isAddress && canMakeGooglePlacesCall()) {
+            try {
+                const mapCenter = map.getCenter();
+                const textResults = await fetchTextSearchPlaces(
+                    address,
+                    { lat: mapCenter.lat, lng: mapCenter.lng },
+                    8000,  // 8 km ≈ 5 miles bias radius
+                    5      // fetch several candidates, pick closest below
+                );
+
+                if (textResults.length > 0) {
+                    // Pick the closest result by distance to map center
+                    let best = textResults[0];
+                    let bestDist = Infinity;
+                    for (const r of textResults) {
+                        if (!r.coordinates) continue;
+                        const d = calculateDistance(
+                            [mapCenter.lat, mapCenter.lng],
+                            [r.coordinates[0], r.coordinates[1]]
+                        );
+                        if (d < bestDist) { bestDist = d; best = r; }
+                    }
+                    console.log(`[searchAddress] Google Text Search "${address}" → ${textResults.length} candidates, closest: "${best.name}" [${best.coordinates}] (${(bestDist/1000).toFixed(1)}km)`);
+
+                    // Convert to Nominatim-like result for displayGeocodeResult
+                    const geoResult = {
+                        lat: best.coordinates[0],
+                        lon: best.coordinates[1],
+                        name: best.name,
+                        display_name: `${best.name}, ${best.address}`,
+                        address: { road: best.address },
+                        _googleTextSearch: true, // flag so enrichment knows source
+                        _googleRating: best.rating,
+                        _googleRatingCount: best.userRatingCount,
+                        _googleMapsUri: best.googleMapsUri,
+                        _googlePhone: best.phone,
+                        _googleWebsite: best.website,
+                        _googlePlaceType: best.place_type
+                    };
+
+                    _lastSearchedAddress = normAddr;
+                    _lastSearchLocation = { ...center };
+                    showLoading(false);
+                    displayGeocodeResult(geoResult, address);
+                    return;
+                }
+                console.log(`[searchAddress] Google Text Search "${address}" — no results, falling back to geocoders`);
+            } catch (e) {
+                console.warn('[searchAddress] Google Text Search failed for place name, falling back:', e);
+            }
+        }
+
         // Phase 1: Fire both geocoders in parallel with strong proximity bias.
         // Photon has native lat/lon proximity; Nominatim uses bounded viewbox (±2°).
         const [nominatimResult, photonResult] = await Promise.all([
@@ -4677,15 +5115,7 @@ async function searchAddress() {
 
         if (candidates.length > 0) {
             // Pick best candidate using composite relevance + proximity score
-            console.log(`[searchAddress] "${address}" — ${candidates.length} geocoder candidates (Nominatim: ${nominatimResult ? 'yes' : 'no'}, Photon: ${photonResult ? 'yes' : 'no'})`);
-            if (nominatimResult) {
-                const nn = nominatimResult.name || (nominatimResult.namedetails && nominatimResult.namedetails.name) || nominatimResult.display_name || '';
-                console.log(`  Nominatim pick: "${nn}" [${nominatimResult.lat}, ${nominatimResult.lon}]`);
-            }
-            if (photonResult) {
-                const pn = photonResult.name || photonResult.display_name || '';
-                console.log(`  Photon pick: "${pn}" [${photonResult.lat}, ${photonResult.lon}]`);
-            }
+
             const result = candidates.length === 1
                 ? candidates[0]
                 : _pickClosestGeoResult(candidates, center,
@@ -4959,6 +5389,9 @@ function displayGeocodeResult(result, searchQuery) {
 
     searchAddressMarker = marker;
     updateZoomFitButtonState();
+
+    // Place person marker at user's GPS location
+    addUserLocationMarker();
 
     // Update the search textbox with the resolved name + address
     const input = document.getElementById('address-input');
@@ -5335,6 +5768,16 @@ async function _enrichSearchedLocation(result, marker, searchQuery, displayAddre
     if (result.phone) enrichment.phone = result.phone;
     if (result.website) enrichment.website = result.website;
 
+    // Seed with Google Text Search data if available (richer than Overpass)
+    if (result._googleTextSearch) {
+        if (result._googleRating) enrichment.rating = result._googleRating;
+        if (result._googleRatingCount) enrichment.reviewCount = result._googleRatingCount;
+        if (result._googleMapsUri) enrichment.googleMapsUri = result._googleMapsUri;
+        if (result._googlePhone) enrichment.phone = result._googlePhone;
+        if (result._googleWebsite) enrichment.website = result._googleWebsite;
+        if (result._googlePlaceType) enrichment.placeType = result._googlePlaceType;
+    }
+
     // ── Mega pin: merge draw search data if a matching business is nearby ──
     _mergeDrawSearchMatch(lat, lon, enrichment, name, displayAddress);
 
@@ -5352,7 +5795,7 @@ async function _enrichSearchedLocation(result, marker, searchQuery, displayAddre
         }
     }
     // Otherwise if we have partial data, update with compact popup (removes "Loading…")
-    else if (enrichment.hours || enrichment.phone || enrichment.website) {
+    else if (enrichment.hours || enrichment.phone || enrichment.website || enrichment.rating || enrichment.googleMapsUri) {
         const wasOpen = marker.isPopupOpen();
         marker.setPopupContent(_buildSearchPinPopup(name, displayAddress, lat, lon, enrichment));
         if (wasOpen) marker.openPopup();
@@ -5640,6 +6083,7 @@ function setupEventListeners() {
     document.getElementById('map').addEventListener('click', (e) => {
         if (!isMobileView()) return;
         if (e.target.closest('.leaflet-popup')) return;
+        if (e.target.closest('.leaflet-control')) return; // let control handlers handle their own clicks
         const sidebar = document.getElementById('results-sidebar');
         if (sidebar.classList.contains('open')) {
             closeSidebar();
@@ -5658,7 +6102,7 @@ function setupEventListeners() {
             const closeBtn = popupDom.querySelector('.leaflet-popup-close-button');
             if (closeBtn && !closeBtn._xBtnWired) {
                 closeBtn._xBtnWired = true;
-                closeBtn.addEventListener('click', () => { _popupClosedByXButton = true; });
+                closeBtn.addEventListener('pointerdown', () => { _popupClosedByXButton = true; });
             }
         }
 
@@ -5949,6 +6393,9 @@ function clearAll() {
     // Remove wild pin
     removeWildPin();
     updateWildPinButtonState();
+
+    // Remove person marker
+    removeUserLocationMarker();
 
     // Clear address input and hide X button
     const addrInput = document.getElementById('address-input');
@@ -7463,7 +7910,7 @@ function _isDestSameAsSearchPin(destLat, destLng) {
 // When advanced multi-stop order is saved, uses buildMultiStopUrl;
 // otherwise falls back to the simple origin→destination URL.
 document.addEventListener('click', function(e) {
-    if (!directionModeEnabled || !drawSearchOrigin) return;
+    if (!directionModeEnabled) return;
 
     const link = e.target.closest('a.directions-capable');
     if (!link) return;

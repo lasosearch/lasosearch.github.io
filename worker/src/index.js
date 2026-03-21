@@ -5,10 +5,11 @@
  * API keys live here as secrets — never touch the browser.
  *
  * Routes:
- *   POST /search   — proxies to Google Places searchNearby
- *   POST /verify   — minimal searchNearby call to verify connectivity
- *   GET  /yelp     — proxies to Yelp Business Search (rate-limited 5K/day)
- *   OPTIONS *      — CORS preflight
+ *   POST /search      — proxies to Google Places searchNearby
+ *   POST /textsearch  — proxies to Google Places searchText
+ *   POST /verify      — minimal searchNearby call to verify connectivity
+ *   GET  /yelp        — proxies to Yelp Business Search (rate-limited 5K/day)
+ *   OPTIONS *         — CORS preflight
  *
  * Secrets (set via `wrangler secret put <NAME>`):
  *   GOOGLE_PLACES_API_KEY — Google Places API key
@@ -20,7 +21,11 @@
 
 const YELP_DAILY_LIMIT = 5000;
 
-// Allowed origins — requests from any other origin are rejected
+// Allowed origins — requests from any other origin are rejected.
+// Production deploys only allow PROD_ORIGINS.
+// Local dev (`wrangler dev`) reads .dev.vars which sets ALLOW_LOCAL_ORIGINS=true,
+// adding localhost/LAN origins so the Flask dev server proxy can reach the worker.
+// `wrangler deploy` never reads .dev.vars, so local origins are always blocked in production.
 const PROD_ORIGINS = [
     'https://lasosearch.github.io',
     'https://idrawmap.com',
@@ -32,15 +37,16 @@ const LOCAL_ORIGINS = [
     'https://localhost',
     'http://127.0.0.1',
     'https://127.0.0.1',
-    'https://192.168.1.127:8000',
+    'https://192.168.',
 ];
 
 function isOriginAllowed(origin, env) {
     if (!origin) return false;
-    const allowed = env.ALLOW_LOCAL_ORIGINS === 'true'
-        ? [...PROD_ORIGINS, ...LOCAL_ORIGINS]
-        : PROD_ORIGINS;
-    return allowed.some(a => origin === a || origin.startsWith(a + ':'));
+    if (PROD_ORIGINS.some(a => origin === a || origin.startsWith(a + ':'))) return true;
+    if (env.ALLOW_LOCAL_ORIGINS === 'true') {
+        return LOCAL_ORIGINS.some(a => origin === a || origin.startsWith(a));
+    }
+    return false;
 }
 
 function corsHeaders(origin) {
@@ -203,18 +209,31 @@ export default {
             );
         }
 
-        if (path !== '/search' && path !== '/verify') {
+        if (path !== '/search' && path !== '/verify' && path !== '/textsearch') {
             return new Response('Not found', { status: 404 });
+        }
+
+        // /verify — lightweight check: key exists, no Google API call
+        if (path === '/verify') {
+            return new Response(
+                JSON.stringify({ status: 'ok', message: 'API key configured' }),
+                { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) } }
+            );
         }
 
         // Read client request
         const body = await request.text();
         const fieldMask = request.headers.get('X-Goog-FieldMask') || 'places.id';
 
+        // Pick the correct Google Places endpoint
+        const googleEndpoint = path === '/textsearch'
+            ? 'https://places.googleapis.com/v1/places:searchText'
+            : 'https://places.googleapis.com/v1/places:searchNearby';
+
         // Forward to Google Places API — inject the secret key server-side
         try {
             const googleResponse = await fetch(
-                'https://places.googleapis.com/v1/places:searchNearby',
+                googleEndpoint,
                 {
                     method: 'POST',
                     headers: {

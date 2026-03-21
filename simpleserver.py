@@ -1,10 +1,32 @@
 #!/usr/bin/env python3
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, request, Response
 import os
 import re
 import ssl
+import requests as req_lib
 
 app = Flask(__name__)
+
+WORKER_URL = 'http://localhost:8787'
+
+@app.route('/api/<path:path>', methods=['GET', 'POST', 'OPTIONS'])
+def proxy_worker(path):
+    """Reverse-proxy /api/* to the local wrangler worker so mobile devices
+    on the LAN never need to reach a second port."""
+    target = f'{WORKER_URL}/{path}'
+    headers = {k: v for k, v in request.headers if k.lower() not in
+               ('host', 'content-length', 'transfer-encoding')}
+    resp = req_lib.request(
+        method=request.method,
+        url=target,
+        headers=headers,
+        data=request.get_data(),
+        params=request.args,
+        allow_redirects=False,
+    )
+    excluded = {'content-encoding', 'content-length', 'transfer-encoding', 'connection'}
+    out_headers = [(k, v) for k, v in resp.raw.headers.items() if k.lower() not in excluded]
+    return Response(resp.content, status=resp.status_code, headers=out_headers)
 
 @app.route('/')
 def serve_index():

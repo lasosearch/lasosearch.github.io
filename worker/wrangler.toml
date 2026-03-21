@@ -9,19 +9,12 @@ compatibility_date = "2024-01-01"
 #   GOOGLE_PLACES_API_KEY — Google Places API key
 #   YELP_API_KEY          — Yelp Fusion API key
 
-# KV namespace for Yelp daily rate limiting.
-# Create it:  wrangler kv namespace create RATE_LIMIT
-# Then paste the id below.
-[[kv_namespaces]]
-binding = "RATE_LIMIT"
-id = "PASTE_KV_NAMESPACE_ID_HERE"
+# KV namespace for Yelp daily rate limiting (disabled — Yelp enrichment not active).
+# To enable:
+#   1. wrangler kv namespace create RATE_LIMIT
+#   2. Paste the id below and uncomment
+#   3. wrangler secret put YELP_API_KEY
+# [[kv_namespaces]]
+# binding = "RATE_LIMIT"
+# id = "PASTE_KV_NAMESPACE_ID_HERE"
 
-# Local development — run: wrangler dev --env dev
-# Enables localhost/127.0.0.1 origins so you can test the site locally.
-# Production deploys (wrangler deploy) never set this, so localhost is blocked.
-[env.dev.vars]
-ALLOW_LOCAL_ORIGINS = "true"
-
-[[env.dev.kv_namespaces]]
-binding = "RATE_LIMIT"
-id = "PASTE_KV_NAMESPACE_ID_HERE"

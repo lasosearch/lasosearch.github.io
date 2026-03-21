@@ -35,4 +35,10 @@ const GOOGLE_PLACES_DAILY_LIMIT = 150;
 
 // Warn in console when this percentage of the daily limit is reached
 const GOOGLE_PLACES_WARN_THRESHOLD = 0.8;
-const LASO_PROXY_URL = 'https://laso-api-proxy.corywboris.workers.dev';
+const _PROD_PROXY = 'https://laso-api-proxy.corywboris.workers.dev';
+const _h = typeof window !== 'undefined' && window.location && window.location.hostname;
+const _isLocal = (_h === 'localhost' || _h === '127.0.0.1' || _h === '192.168.1.127');
+// Local dev: proxy through the Flask server on the same origin (/api/* → localhost:8787)
+// so mobile devices on the LAN never need to reach a second port.
+const _LOCAL_PROXY = window.location.origin + '/api';
+const LASO_PROXY_URL = _isLocal ? _LOCAL_PROXY : _PROD_PROXY;
