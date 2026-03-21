@@ -3090,13 +3090,86 @@ function canMakeGooglePlacesCall() {
 }
 
 /**
- * Convert a polygon (array of [lat, lng] pairs) to a bounding circle
- * for Google Nearby Search's locationRestriction.
+ * Minimum enclosing circle of 2D points (Welzl's algorithm, O(n) expected).
+ * Input: array of [x, y] pairs.  Returns { cx, cy, r }.
+ */
+function _welzlMinCircle(points) {
+    function dist2(a, b) {
+        return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
+    }
+    function circFrom2(a, b) {
+        return { cx: (a[0] + b[0]) / 2, cy: (a[1] + b[1]) / 2,
+                 r2: dist2(a, b) / 4 };
+    }
+    function circFrom3(a, b, c) {
+        const D = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+        if (Math.abs(D) < 1e-14) {
+            const d1 = dist2(a, b), d2 = dist2(b, c), d3 = dist2(a, c);
+            if (d1 >= d2 && d1 >= d3) return circFrom2(a, b);
+            if (d2 >= d3) return circFrom2(b, c);
+            return circFrom2(a, c);
+        }
+        const A = a[0] * a[0] + a[1] * a[1];
+        const B = b[0] * b[0] + b[1] * b[1];
+        const C = c[0] * c[0] + c[1] * c[1];
+        const cx = (A * (b[1] - c[1]) + B * (c[1] - a[1]) + C * (a[1] - b[1])) / D;
+        const cy = (A * (c[0] - b[0]) + B * (a[0] - c[0]) + C * (b[0] - a[0])) / D;
+        return { cx, cy, r2: dist2([cx, cy], a) };
+    }
+    function contains(circ, p) {
+        return dist2([circ.cx, circ.cy], p) <= circ.r2 * (1 + 1e-10) + 1e-20;
+    }
+
+    // Iterative Welzl (avoids stack overflow on large vertex sets)
+    const P = [...points];
+    for (let i = P.length - 1; i > 0; i--) {            // Fisher-Yates shuffle
+        const j = Math.floor(Math.random() * (i + 1));
+        [P[i], P[j]] = [P[j], P[i]];
+    }
+    let D = { cx: P[0][0], cy: P[0][1], r2: 0 };
+    for (let i = 1; i < P.length; i++) {
+        if (!contains(D, P[i])) {
+            D = { cx: P[i][0], cy: P[i][1], r2: 0 };
+            for (let j = 0; j < i; j++) {
+                if (!contains(D, P[j])) {
+                    D = circFrom2(P[i], P[j]);
+                    for (let k = 0; k < j; k++) {
+                        if (!contains(D, P[k])) {
+                            D = circFrom3(P[i], P[j], P[k]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    D.r = Math.sqrt(D.r2);
+    return D;
+}
+
+/**
+ * Convert a polygon (array of [lat, lng] pairs) to the smallest bounding
+ * circle for Google Nearby Search's locationRestriction.
+ *
+ * Uses Welzl's minimum enclosing circle algorithm on an equirectangular
+ * projection of the vertices, then converts back to lat/lng + meters.
  */
 function polygonToBoundingCircle(polygonPoints) {
-    const center = findPointInsidePolygon(polygonPoints);
-    if (!center) return null;
+    if (!polygonPoints || polygonPoints.length < 3) return null;
 
+    // Project to local equirectangular so circles are true circles on the ground
+    const refLat = polygonPoints.reduce((s, p) => s + p[0], 0) / polygonPoints.length;
+    const cosLat = Math.cos(refLat * Math.PI / 180);
+    const projected = polygonPoints.map(p => [p[1] * cosLat, p[0]]);
+
+    // Minimum enclosing circle in projected space
+    const mec = _welzlMinCircle(projected);
+
+    // Unproject center back to lat/lng
+    const centerLat = mec.cy;
+    const centerLng = mec.cx / cosLat;
+    const center = [centerLat, centerLng];
+
+    // Actual radius in meters via Haversine (guarantees all vertices enclosed)
     let maxRadius = 0;
     for (const point of polygonPoints) {
         const dist = calculateDistance(center, point);
@@ -3104,9 +3177,7 @@ function polygonToBoundingCircle(polygonPoints) {
     }
 
     // Cap at 50 km (Google's max).  No padding — the circle already
-    // contains the entire polygon (all vertices within maxRadius).
-    // Padding would only waste API result slots on places outside the
-    // polygon that get filtered out anyway.
+    // contains the entire polygon.
     const radius = Math.min(maxRadius, 50000);
 
     return {
