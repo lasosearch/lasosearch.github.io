@@ -145,7 +145,7 @@ const GOOGLE_TYPE_GROUPS = [
     // Food & Drink
     ['restaurant', 'cafe', 'bar', 'bakery', 'meal_delivery', 'meal_takeaway'],
     // Shopping & Retail
-    ['store', 'supermarket', 'grocery_store', 'shopping_mall', 'convenience_store',
+    ['supermarket', 'grocery_store', 'shopping_mall', 'convenience_store',
      'clothing_store', 'electronics_store', 'furniture_store', 'hardware_store',
      'home_goods_store', 'jewelry_store', 'shoe_store', 'pet_store', 'book_store',
      'liquor_store'],
