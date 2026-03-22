@@ -508,7 +508,7 @@ function calculatePolygonFit(polygon, mapObj, padTop, padRight, padBottom, padLe
         L.point(ccAtTarget.x + offsetX, ccAtTarget.y + offsetY), targetZoom
     );
 
-    return { center: mapCenter, zoom: targetZoom };
+    return { center: mapCenter, zoom: targetZoom, contentCenter: contentCenter };
 }
 
 /**
@@ -584,7 +584,7 @@ function calculateCategoryFit(points, mapObj, padTop, padRight, padBottom, padLe
         L.point(ccAtTarget.x + offsetX, ccAtTarget.y + offsetY), targetZoom
     );
 
-    return { center: mapCenter, zoom: Math.round(targetZoom * 100) / 100 };
+    return { center: mapCenter, zoom: Math.round(targetZoom * 100) / 100, contentCenter: contentCenter };
 }
 
 /**
@@ -600,10 +600,45 @@ function applyPolygonFit(fitState) {
     if (isLocationSearchZoom) { _myLocEpoch++; isLocationSearchZoom = false; }
     isAutoFittingPolygon = true;
     activeFitState = fitState;
-    map.flyTo(fitState.center, fitState.zoom, { duration: 0.5 });
+    // In walk mode: freeze bearing & break centering lock so the fit
+    // holds as-is — same direction the user is facing, no re-centering.
+    if (_walkMode) {
+        _bearingPaused = true;
+        _walkCentered = false;
+        if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
+    }
+    // When bearing != 0 (walk mode), the fitState.center was computed for
+    // bearing=0 padding offset.  Rotate that offset by the current bearing
+    // so content lands in the correct visible canvas area.
+    //
+    // We derive the offset from the fitState itself (center vs contentCenter)
+    // rather than reading the DOM — the DOM may not have the correct overlay
+    // classes yet during the initial search (sidebar hasn't opened).
+    const bearing = _getMapBearing();
+    let flyCenter = fitState.center;
+    if (Math.abs(bearing) > 1 && fitState.contentCenter) {
+        const z = fitState.zoom;
+        const cc = map.project(fitState.contentCenter, z);
+        const oc = map.project(fitState.center, z);
+        // Bearing=0 offset in CRS pixels
+        const dx0 = oc.x - cc.x;
+        const dy0 = oc.y - cc.y;
+        // Rotate offset by bearing (CRS convention: Y-down, bearing clockwise)
+        const rad = bearing * Math.PI / 180;
+        const dx = dx0 * Math.cos(rad) + dy0 * Math.sin(rad);
+        const dy = -dx0 * Math.sin(rad) + dy0 * Math.cos(rad);
+        flyCenter = map.unproject(L.point(cc.x + dx, cc.y + dy), z);
+    }
+    map.flyTo(flyCenter, fitState.zoom, { duration: 0.5 });
     const epoch = _clearEpoch;
     map.once('moveend', () => {
         isAutoFittingPolygon = false;
+        // Keep bearing paused in walk mode — the fit should hold without
+        // compass rotation or re-centering.  The user can recenter via
+        // the compass button which will resume bearing animation.
+        if (_walkMode) {
+            _bearingPaused = false;
+        }
         if (_clearEpoch !== epoch) return;   // clearAll fired — all state is gone
         // After fit animation, reopen selected marker popup centered.
         if (selectedPlaceIndex !== null && markers.length > 0) {
@@ -5559,7 +5594,7 @@ async function searchAddress() {
                     // fill the remaining slots with the highest-rated.  This
                     // ensures nearby affordable spots (e.g. the 3.8-star pizza
                     // place next door) always appear alongside top-rated picks.
-                    const CLOSEST_GUARANTEE = 3;
+                    const CLOSEST_GUARANTEE = 5;
                     const MAX_RESULTS = 10;
 
                     // Sort by distance to pick the closest
@@ -7137,6 +7172,19 @@ function clearAll() {
     const lasoBtnClear = document.getElementById('lasosearch-btn');
     if (lasoBtnClear) lasoBtnClear.classList.remove('shimmer');
 
+    // Clear scroll-container constraint
+    const content = document.querySelector('.sidebar-content');
+    if (content) content.style.maxHeight = '';
+
+    // Fully hide sidebar BEFORE computing flyTo target — otherwise
+    // _pinCenterForOverlay reads the stale overlay state and offsets
+    // the center as if the overlay is still there.
+    document.body.classList.remove('results-peeked');
+    document.body.classList.remove('results-expanded');
+    const sidebar = document.getElementById('results-sidebar');
+    sidebar.classList.remove('open');
+    document.body.classList.remove('results-open');
+
     // Fly to user location at default zoom (same as Current Location centering)
     const defaultZoom = 14 + (isMobileView() ? 2 : 3);
     if (window._userLatLng) {
@@ -7162,17 +7210,6 @@ function clearAll() {
             updateZoomLevelIndicator();
         }
     }
-
-    // Clear scroll-container constraint
-    const content = document.querySelector('.sidebar-content');
-    if (content) content.style.maxHeight = '';
-
-    // Fully hide sidebar (not just peek)
-    document.body.classList.remove('results-peeked');
-    document.body.classList.remove('results-expanded');
-    const sidebar = document.getElementById('results-sidebar');
-    sidebar.classList.remove('open');
-    document.body.classList.remove('results-open');
 
     // Reset status
     updateStatus('Ready');
