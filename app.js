@@ -691,6 +691,13 @@ function initMap() {
         renderer: L.canvas()  // Use Canvas instead of SVG for better performance with large polygons
     });
 
+    // Standard mode starts with touchRotate disabled so two-finger pinch
+    // rotation never fires setBearing() during zoom — that would trigger
+    // Renderer._update() every frame, fighting the CSS-transform-based
+    // _updateTransform() and causing the polygon to lag/freeze.
+    // Walk mode also keeps touchRotate disabled (see _setWalkMode).
+    if (map.touchRotate && map.touchRotate.disable) map.touchRotate.disable();
+
     // Custom zoom control using Font Awesome icons — SVG glyphs are inherently centered
     L.control.zoom({
         zoomInText: '<i class="fas fa-plus"></i>',
@@ -1131,6 +1138,8 @@ function initMap() {
     });
 
     map.on('zoomstart', () => {
+        console.time('[ZOOM] total');
+        console.log(`[ZOOM] zoomstart  walkMode=${_walkMode}  _animatingZoom=${map._animatingZoom}  bearing=${_getMapBearing().toFixed(1)}  hasPolygon=${!!currentPolygon}`);
         if (_buttonZoomPending) {
             // Zoom triggered by +/- button — leave pinch mode
             _buttonZoomPending = false;
@@ -1150,6 +1159,26 @@ function initMap() {
             if (_isAtMyLocation) { _isAtMyLocation = false; _myLocationCenter = null; updateMyLocationButtonState(); }
             updateZoomLevelIndicator();   // hide indicator immediately on pinch start
         }
+        // Freeze bearing during zoom so rotation doesn't fight the zoom
+        // CSS transform — prevents polygon/tile visual lag.
+        // Walk mode: pause our compass rAF loop.
+        // Standard mode: pinch gestures can accidentally rotate the map
+        //   via touchRotate (bearing drifts to ~359.x) — snap back to 0.
+        if (_walkMode && !_bearingPaused) {
+            _bearingPaused = true;
+            if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
+            _bearingPausedForZoom = true;  // remember we paused it
+        }
+        // In standard mode, disable touchRotate during zoom so accidental
+        // pinch rotation doesn't fight the zoom CSS transform.
+        if (!_walkMode && !_touchRotateDisabledForZoom && map.touchRotate && map.touchRotate.disable) {
+            map.touchRotate.disable();
+            _touchRotateDisabledForZoom = true;
+            // Snap any accidental rotation back to north
+            if (typeof map.setBearing === 'function' && Math.abs(_getMapBearing()) > 0.01) {
+                map.setBearing(0);
+            }
+        }
         // Only close popup during auto-fit — let user zooms keep the popup in place
         if (isAutoFittingPolygon) {
             _isChangingSelection = true;
@@ -1158,6 +1187,7 @@ function initMap() {
         }
     });
     map.on('zoomend', () => {
+        console.log(`[ZOOM] zoomend  _animatingZoom=${map._animatingZoom}  walkMode=${_walkMode}  _bearingPausedForZoom=${_bearingPausedForZoom}`);
         const z = map.getZoom();
         // Only mark as fit-zoom when an auto-fit animation is in progress
         isFitZoom = isAutoFittingPolygon && !Number.isInteger(z);
@@ -1168,6 +1198,44 @@ function initMap() {
         console.log(`Zoom level: ${currentZoomLevel} (absolute: ${z})${isFitZoom ? ` [FIT ${z.toFixed(2)}]` : ''}${isPinchZoom ? ' [PINCH]' : ''}`);
         updateZoomLevelIndicator();
         updateDrawButtonState();
+        // Resume bearing after zoom completes — rotation is safe now
+        if (_bearingPausedForZoom) {
+            _bearingPausedForZoom = false;
+            _bearingPaused = false;
+            if (_walkMode && _userHeading !== null) _smoothSetBearing(-_userHeading);
+        }
+        // Clear the flag but keep touchRotate disabled in standard mode —
+        // re-enabling it would let the next pinch trigger setBearing() calls
+        // that cause polygon rendering lag (see comment at map init).
+        if (_touchRotateDisabledForZoom) {
+            _touchRotateDisabledForZoom = false;
+        }
+        // Snap any residual bearing drift to north in standard mode
+        if (!_walkMode && typeof map.setBearing === 'function' && Math.abs(_getMapBearing()) > 0.01) {
+            map.setBearing(0);
+        }
+        // ── Diagnostic: renderer state at zoomend ──
+        if (currentPolygon && currentPolygon._renderer) {
+            const r = currentPolygon._renderer;
+            const c = r._container;
+            console.log(`[ZOOM] renderer: type=${r.constructor.name}  _zoom=${r._zoom}  mapZoom=${map.getZoom().toFixed(2)}  canvasTransform="${c ? c.style.transform : 'N/A'}"  _animatingZoom=${map._animatingZoom}`);
+            // Force immediate canvas update
+            r._update();
+            console.log(`[ZOOM] after forced _update: canvasTransform="${c ? c.style.transform : 'N/A'}"`);
+        } else {
+            console.log(`[ZOOM] NO renderer on currentPolygon!  currentPolygon=${!!currentPolygon}`);
+        }
+        console.timeEnd('[ZOOM] total');
+        requestAnimationFrame(() => {
+            if (currentPolygon && currentPolygon._renderer) {
+                const c = currentPolygon._renderer._container;
+                console.log(`[ZOOM] rAF: canvasTransform="${c ? c.style.transform : 'N/A'}"`);
+            }
+            console.log('[ZOOM] first rAF after zoomend');
+        });
+    });
+    map.on('moveend', () => {
+        console.log(`[ZOOM] moveend  _animatingZoom=${map._animatingZoom}`);
     });
 
     // Detect user dragging away from fit center — reactivate buttons immediately
@@ -1626,6 +1694,8 @@ let _userMarkerMode = 'idle';  // 'idle' | 'active'
 let _walkMode = false;         // true = map auto-rotates with heading
 let _walkCentered = true;      // true = user dot is at true map center (rotation pivot)
 let _bearingPaused = false;    // true during flyTo — suppresses bearing updates
+let _bearingPausedForZoom = false; // true when bearing was paused by zoomstart (resume on zoomend)
+let _touchRotateDisabledForZoom = false; // true when touchRotate was disabled by zoomstart (re-enable on zoomend)
 
 // ── Smooth bearing animation state ──
 let _bearingTarget = 0;
@@ -1887,8 +1957,9 @@ function _setWalkMode(on) {
             _walkCentered = true;
         });
     } else {
-        // Re-enable manual rotation
-        if (map.touchRotate && map.touchRotate.enable) map.touchRotate.enable();
+        // Keep touchRotate disabled in standard mode — re-enabling it would
+        // let TouchGestures call setBearing() during pinch zoom, causing
+        // Renderer._update() to fight _updateTransform() and lag the polygon.
         _walkCentered = false;
         // Graceful easeInOut transition: flyTo + bearing back to north over 600ms
         const wz = map.getZoom();
