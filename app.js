@@ -5555,15 +5555,35 @@ async function searchAddress() {
                 }
 
                 if (nearby.length > 0) {
-                    // Sort by rating descending (highest-rated first)
-                    nearby.sort((a, b) => {
+                    // Balanced selection: guarantee the 3 closest places, then
+                    // fill the remaining slots with the highest-rated.  This
+                    // ensures nearby affordable spots (e.g. the 3.8-star pizza
+                    // place next door) always appear alongside top-rated picks.
+                    const CLOSEST_GUARANTEE = 3;
+                    const MAX_RESULTS = 10;
+
+                    // Sort by distance to pick the closest
+                    nearby.sort((a, b) => (a._distFromCenter || Infinity) - (b._distFromCenter || Infinity));
+                    const closest = nearby.slice(0, CLOSEST_GUARANTEE);
+                    const rest = nearby.slice(CLOSEST_GUARANTEE);
+
+                    // Fill remaining slots with highest-rated from the rest
+                    rest.sort((a, b) => {
                         const ra = typeof a.rating === 'number' ? a.rating : -Infinity;
                         const rb = typeof b.rating === 'number' ? b.rating : -Infinity;
                         if (ra !== rb) return rb - ra;
                         return (b.userRatingCount || 0) - (a.userRatingCount || 0);
                     });
-                    // Cap to 10 results after sorting
-                    nearby = nearby.slice(0, 10);
+                    const topRated = rest.slice(0, MAX_RESULTS - closest.length);
+
+                    // Combine and deduplicate (shouldn't have dupes, but safety)
+                    const combined = [...closest, ...topRated];
+                    const seen = new Set();
+                    nearby = combined.filter(p => {
+                        if (seen.has(p.place_id)) return false;
+                        seen.add(p.place_id);
+                        return true;
+                    });
 
 
 
