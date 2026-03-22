@@ -817,10 +817,10 @@ function initMap() {
                             padBottom = TOASTER_LIP_HEIGHT + padV;
                         }
                     }
-                    const { center, zoom } = calculatePolygonFit(
+                    const { center, zoom, contentCenter } = calculatePolygonFit(
                         currentPolygon, map, padTop, padH, padBottom, padH
                     );
-                    const fitState = { center, zoom: Math.round(zoom * 100) / 100 };
+                    const fitState = { center, zoom: Math.round(zoom * 100) / 100, contentCenter };
                     applyPolygonFit(fitState);
                     fitZoomValue = fitState.zoom;
                 }
@@ -3462,23 +3462,25 @@ async function performLasoSearch() {
             // State 1: results-open (toaster covers bottom half of map)
             const headerPad = getMobileHeaderPad();
             const toasterVisibleH = mapEl ? mapEl.offsetHeight * 0.5 : 0;
-            const { center: openCenter, zoom: rawOpenZoom } = calculatePolygonFit(
+            const { center: openCenter, zoom: rawOpenZoom, contentCenter: openCC } = calculatePolygonFit(
                 currentPolygon, map,
                 5 + headerPad, 5, toasterVisibleH + 5, 5
             );
             fitStateResultsOpen = {
                 center: openCenter,
-                zoom: Math.round(rawOpenZoom * 100) / 100
+                zoom: Math.round(rawOpenZoom * 100) / 100,
+                contentCenter: openCC
             };
 
             // State 2: lip-peeked (only 52px lip visible at bottom)
-            const { center: lipCenter, zoom: rawLipZoom } = calculatePolygonFit(
+            const { center: lipCenter, zoom: rawLipZoom, contentCenter: lipCC } = calculatePolygonFit(
                 currentPolygon, map,
                 5 + headerPad, 5, TOASTER_LIP_HEIGHT + 5, 5
             );
             fitStateLipPeeked = {
                 center: lipCenter,
-                zoom: Math.round(rawLipZoom * 100) / 100
+                zoom: Math.round(rawLipZoom * 100) / 100,
+                contentCenter: lipCC
             };
 
             // Apply the results-open fit.
