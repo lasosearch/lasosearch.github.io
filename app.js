@@ -136,7 +136,8 @@ const GOOGLE_FIELD_MASK = [
     'places.primaryTypeDisplayName',
     'places.internationalPhoneNumber',
     'places.websiteUri',
-    'places.businessStatus'
+    'places.businessStatus',
+    'places.currentOpeningHours'
 ].join(',');
 
 // Place type groups for parallel Nearby Search calls.
@@ -314,14 +315,24 @@ function startLocationTracking() {
             directionLocations.A = { lat: loc[0], lng: loc[1], label: 'Your location' };
             saveLocation(loc[0], loc[1]);
 
+            // Ensure person dot is always on the map (idle or active)
+            _ensureUserMarkerOnMap();
+
+            // Update compass heading if available in the position
+            if (typeof position.coords.heading === 'number' && !isNaN(position.coords.heading)) {
+                _updateUserHeading(position.coords.heading);
+            }
+
             if (firstFix) {
                 firstFix = false;
                 const mapCenter = map.getCenter();
                 const dist = calculateDistance(loc, [mapCenter.lat, mapCenter.lng]);
                 if (dist > LOCATION_CHANGE_THRESHOLD) {
+                    // Far away — fly with zoom change + header offset
                     const targetZoom = initialZoom + (isMobileView() ? 2 : 3);
                     isLocationSearchZoom = true;
-                    map.flyTo(loc, targetZoom, { duration: 1.0 });
+                    const flyTarget = _pinCenterForOverlay(loc, targetZoom);
+                    map.flyTo(flyTarget, targetZoom, { duration: 1.0 });
                     map.once('moveend', () => {
                         isLocationSearchZoom = false;
                         currentZoomLevel = map.getZoom() - initialZoom;
@@ -330,6 +341,9 @@ function startLocationTracking() {
                         updateStatus('Location found — Ready');
                     });
                 } else {
+                    // Close (subsequent refresh) — still apply header-offset
+                    // centering since initMap used the raw saved lat/lng.
+                    _gracefulPanToUser();
                     updateStatus('Location found — Ready');
                 }
                 updateMyLocationButtonState();
@@ -637,6 +651,8 @@ function initMap() {
         zoomSnap: 0,           // allow fully continuous pinch/wheel zoom (buttons handle integer steps)
         doubleClickZoom: false,
         zoomControl: false,
+        rotate: true,
+        touchRotate: true,     // two-finger pinch rotation on mobile
         renderer: L.canvas()  // Use Canvas instead of SVG for better performance with large polygons
     });
 
@@ -814,8 +830,26 @@ function initMap() {
                 directionLocations.A = { lat: loc[0], lng: loc[1], label: 'Your location' };
                 isLocationSearchZoom = true;
                 const targetZoom = 14 + (isMobileView() ? 2 : 3);
-                // Offset the fly target so the GPS point lands in the visible
-                // canvas (above overlay), not at absolute map center.
+                // In standard mode, snap bearing to north BEFORE computing
+                // flyTarget so the offset is calculated for the final bearing (0),
+                // not the stale in-flight value.
+                if (!_walkMode) {
+                    if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
+                    if (typeof map.setBearing === 'function') {
+                        map.setBearing(0);
+                        _bearingCurrent = 0;
+                        _bearingTarget = 0;
+                    }
+                    _bearingOriginDelta = 0;
+                    _syncConeRotation();
+                }
+                // Pause bearing updates during flyTo so animation is smooth
+                if (_walkMode) {
+                    _bearingPaused = true;
+                    if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
+                }
+                // _pinCenterForOverlay is bearing-aware: computes the correct
+                // offset at any map rotation so one flyTo lands perfectly.
                 const flyTarget = _pinCenterForOverlay(loc, targetZoom);
                 map.flyTo(flyTarget, targetZoom, { duration: 0.8 });
                 const finalize = () => {
@@ -830,7 +864,19 @@ function initMap() {
                 map.once('moveend', () => {
                     if (_myLocEpoch !== epoch) { isLocationSearchZoom = false; return; }
                     isLocationSearchZoom = false;
-                    // Fine-tune with DOM measurements (tiny correction if any)
+                    // Resume bearing updates now that flyTo is done
+                    if (_walkMode) {
+                        _bearingPaused = false;
+                        _walkCentered = true;
+                        // Catch up to latest heading
+                        if (_userHeading !== null && typeof map.setBearing === 'function') {
+                            map.setBearing(-_userHeading);
+                            _bearingCurrent = -_userHeading;
+                            _bearingTarget = -_userHeading;
+                        }
+                        _syncConeRotation();
+                    }
+                    // Fine-tune if an overlay (results panel) covers part of the map
                     if (_panToAvailableCanvas(loc)) {
                         map.once('moveend', () => {
                             if (_myLocEpoch !== epoch) return;
@@ -851,6 +897,9 @@ function initMap() {
                 }
                 if (container.classList.contains('locating')) return;
                 if (_isAtMyLocation) return;  // already centered on location
+
+                // Kick off compass tracking on this user gesture (iOS requires it)
+                _startCompassTracking();
 
                 // Fast path: watchPosition already has a recent GPS fix — use it
                 // instantly (no blue flash, no async delay).
@@ -905,6 +954,103 @@ function initMap() {
         }
     });
     new WildPinControl().addTo(map);
+
+    // Walk View button — toggles between standard (north-up) and walk (heading-up) modes
+    const WalkViewControl = L.Control.extend({
+        options: { position: 'topleft' },
+        onAdd() {
+            const container = L.DomUtil.create('div', 'leaflet-control-walk-view leaflet-bar leaflet-control');
+            const btn = L.DomUtil.create('a', 'leaflet-control-walk-view-btn', container);
+            btn.innerHTML = '<i class="fas fa-walking"></i>';
+            btn.href = '#';
+            btn.title = 'Walk view';
+            btn.role = 'button';
+            btn.setAttribute('aria-label', 'Walk view');
+
+            L.DomEvent.disableClickPropagation(container);
+
+            L.DomEvent.on(btn, 'click', (e) => {
+                L.DomEvent.preventDefault(e);
+                _setWalkMode(!_walkMode);
+            });
+
+            return container;
+        }
+    });
+    new WalkViewControl().addTo(map);
+
+    // Compass reset button — resets bearing to north-up without changing center or zoom.
+    // Disabled during walk mode (walk mode controls bearing automatically).
+    const CompassResetControl = L.Control.extend({
+        options: { position: 'topleft' },
+        onAdd() {
+            const container = L.DomUtil.create('div', 'leaflet-control-compass-reset leaflet-bar leaflet-control');
+            const btn = L.DomUtil.create('a', 'leaflet-control-compass-reset-btn', container);
+            btn.innerHTML = '<i class="fas fa-compass"></i>';
+            btn.href = '#';
+            btn.title = 'Reset north';
+            btn.role = 'button';
+            btn.setAttribute('aria-label', 'Reset north');
+
+            L.DomEvent.disableClickPropagation(container);
+
+            L.DomEvent.on(btn, 'click', (e) => {
+                L.DomEvent.preventDefault(e);
+                if (_walkMode) {
+                    // Walk mode: smooth flyTo recenter (same animation as Current Location)
+                    if (!window._userLatLng) return;
+                    _bearingPaused = true;
+                    if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
+                    const wz = map.getZoom();
+                    const wTarget = _pinCenterForOverlay(window._userLatLng, wz);
+                    map.flyTo(wTarget, wz, { animate: true, duration: 0.6, easeLinearity: 0.25 });
+                    map.once('moveend', () => {
+                        _bearingPaused = false;
+                        _walkCentered = true;
+                        if (_userHeading !== null && typeof map.setBearing === 'function') {
+                            map.setBearing(-_userHeading);
+                            _bearingCurrent = -_userHeading;
+                            _bearingTarget = -_userHeading;
+                        }
+                        _syncConeRotation();
+                    });
+                    return;
+                }
+                // Standard mode: snap bearing to north, then fly to user
+                // (same as Current Location but keeps current zoom)
+                if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
+                if (typeof map.setBearing === 'function') {
+                    map.setBearing(0);
+                    _bearingCurrent = 0;
+                    _bearingTarget = 0;
+                }
+                _bearingOriginDelta = 0;
+                _syncConeRotation();
+                const currentZoom = map.getZoom();
+                const flyTarget = _pinCenterForOverlay(window._userLatLng, currentZoom);
+                map.flyTo(flyTarget, currentZoom, { animate: true, duration: 0.6, easeLinearity: 0.25 });
+            });
+
+            return container;
+        }
+    });
+    new CompassResetControl().addTo(map);
+
+    // Sync cone rotation when map bearing changes (e.g. free pinch rotation).
+    // 'rotate' is the leaflet-rotate event; 'move' is the Leaflet fallback
+    // that fires during any map movement including rotation gestures.
+    map.on('rotate move', _syncConeRotation);
+
+    // Detect user drag in walk mode — stop auto-centering until recenter pressed
+    map.on('dragstart', () => {
+        if (_walkMode) _walkCentered = false;
+    });
+
+    // User-initiated zoom in walk mode breaks the centering lock (same as drag).
+    // Guard with !_bearingPaused so our own flyTo zoom doesn't break it.
+    map.on('zoomstart', () => {
+        if (_walkMode && !_bearingPaused) _walkCentered = false;
+    });
 
     // Add OpenStreetMap tile layer (completely free, no API key)
     const tileLayer = L.tileLayer(OSM_TILE_URL, {
@@ -1239,7 +1385,7 @@ function updateDrawButtonState() {
             if (disabled) {
                 const needed = Math.ceil(Math.max(0, minZoomToDraw - currentZoomLevel));
                 const line1 = `Zoom in ${needed} more level${needed === 1 ? '' : 's'} to draw`;
-                const line2 = 'Use + or pinch to zoom into the map';
+                const line2 = 'Use <b>+</b> or pinch to zoom into the map';
                 tooltip.innerHTML =
                     '<div class="draw-tooltip-text">' +
                         '<span>' + line1 + '</span>' +
@@ -1267,6 +1413,14 @@ function updateDrawButtonState() {
             }
             tooltip.setAttribute('aria-hidden', disabled ? 'false' : 'true');
         }
+    }
+
+    // Shimmer the map '+' button when category results are showing but zoom
+    // is too low to draw — guides the user toward the next action.
+    const zoomInBtn = document.querySelector('.leaflet-control-zoom-in');
+    if (zoomInBtn) {
+        const needsShimmer = zoomTooLow && !hasPolygon && !!fitStateResultsOpen;
+        zoomInBtn.classList.toggle('shimmer', needsShimmer);
     }
 }
 
@@ -1423,35 +1577,356 @@ function _buildWildPinPopup(lat, lng) {
 }
 
 // =============================================================================
-// User Location Marker — person icon at GPS position (shown during searches)
+// User Location Marker — always visible on map.
+//   • Idle  : green dot (always present once GPS fix acquired)
+//   • Active: full person icon with heading cone (during search results)
 // =============================================================================
 
-function addUserLocationMarker() {
+let _userHeading = null;       // degrees from true north (0–360), null = unknown
+let _headingWatchActive = false;
+let _userMarkerMode = 'idle';  // 'idle' | 'active'
+
+// ── Walk View state ──
+let _walkMode = false;         // true = map auto-rotates with heading
+let _walkCentered = true;      // true = user dot is at true map center (rotation pivot)
+let _bearingPaused = false;    // true during flyTo — suppresses bearing updates
+
+// ── Smooth bearing animation state ──
+let _bearingTarget = 0;
+let _bearingCurrent = 0;
+let _bearingRafId = null;
+let _bearingOriginDelta = 0;  // magnitude of the rotation that started this animation
+
+function _getMapBearing() {
+    return (map && typeof map.getBearing === 'function') ? map.getBearing() : 0;
+}
+
+function _coneVisualRotation() {
+    if (_userHeading === null) return 0;
+    // Cone must point where the user faces ON SCREEN.
+    // DivIcons stay screen-upright (leaflet-rotate default rotateWithView=false),
+    // so we offset by the map's bearing.
+    return _userHeading + _getMapBearing();
+}
+
+function _buildUserMarkerHtml() {
+    const rot = _coneVisualRotation();
+    if (_userMarkerMode === 'idle') {
+        const coneHtml = _userHeading !== null
+            ? '<div class="user-heading-cone user-heading-cone-sm" style="transform:rotate(' + rot + 'deg);"></div>'
+            : '';
+        return '<div class="user-location-dot user-location-dot-sm">'
+            + coneHtml
+            + '<div class="user-location-inner user-location-inner-sm"></div></div>';
+    }
+    // Active: full person icon with heading cone
+    const coneHtml = _userHeading !== null
+        ? '<div class="user-heading-cone" style="transform:rotate(' + rot + 'deg);"></div>'
+        : '';
+    return '<div class="user-location-dot">'
+        + coneHtml
+        + '<div class="user-location-inner">'
+        + '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="white">'
+        + '<path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>'
+        + '</svg></div></div>';
+}
+
+function _userMarkerIconSize() {
+    return _userMarkerMode === 'idle' ? [48, 48] : [60, 60];
+}
+function _userMarkerIconAnchor() {
+    return _userMarkerMode === 'idle' ? [24, 24] : [30, 30];
+}
+
+function _refreshUserMarkerIcon() {
+    if (!userLocationMarker) return;
+    userLocationMarker.setIcon(L.divIcon({
+        className: 'user-location-marker',
+        html: _buildUserMarkerHtml(),
+        iconSize: _userMarkerIconSize(),
+        iconAnchor: _userMarkerIconAnchor()
+    }));
+}
+
+function _syncConeRotation() {
+    if (!userLocationMarker || !map.hasLayer(userLocationMarker)) return;
+    if (_userHeading === null) return;
+    const iconEl = userLocationMarker._icon;
+    if (!iconEl) return;
+    const cone = iconEl.querySelector('.user-heading-cone');
+    if (cone) {
+        cone.style.transform = 'rotate(' + _coneVisualRotation() + 'deg)';
+    } else {
+        // Cone didn't exist yet (heading arrived after marker was created) — rebuild
+        _refreshUserMarkerIcon();
+    }
+}
+
+function setUserMarkerMode(mode) {
+    if (mode === _userMarkerMode) return;
+    _userMarkerMode = mode;
+    _refreshUserMarkerIcon();
+}
+
+// ── Smooth bearing interpolation (Apple Maps-like adaptive easing) ──
+
+function _normDelta(from, to) {
+    return ((to - from + 540) % 360) - 180;
+}
+
+function _bearingStep() {
+    if (_bearingPaused) { _bearingRafId = null; return; }
+    const delta = _normDelta(_bearingCurrent, _bearingTarget);
+    const absDelta = Math.abs(delta);
+
+    if (absDelta < 0.3) {
+        // Close enough — snap and stop
+        _bearingCurrent = _bearingTarget;
+        if (typeof map.setBearing === 'function') map.setBearing(_bearingCurrent);
+        // In walk mode, keep user visually centered
+        if (_walkMode && _walkCentered) _gracefulPanToUser(false);
+        _syncConeRotation();
+        _bearingRafId = null;
+        _bearingOriginDelta = 0;
+        return;
+    }
+
+    // Adaptive speed factor:
+    //  < 12.5°  → micro-adjustments
+    //  12.5–90° → light ease (smooth mid-range turns)
+    //  > 90°    → gentle ease (graceful large rotations)
+    //
+    // After a large swing (origin > 45°), the micro tail uses a gentler
+    // settling factor so the last few degrees ease in gracefully rather
+    // than snapping — gives the "we're precisely following you" feel.
+    let factor;
+    if (absDelta < 12.5) {
+        if (_bearingOriginDelta > 45) {
+            // Settling after a big turn — gentle micro ease
+            factor = 0.12;
+        } else {
+            // Pure micro rotation — responsive
+            factor = 0.35;
+        }
+    } else if (absDelta < 90) {
+        factor = 0.14;
+    } else {
+        factor = 0.07;
+    }
+
+    _bearingCurrent += delta * factor;
+    // Normalize to [-180, 180]
+    _bearingCurrent = ((_bearingCurrent + 540) % 360) - 180;
+    if (typeof map.setBearing === 'function') map.setBearing(_bearingCurrent);
+    // In walk mode, keep user visually centered
+    if (_walkMode && _walkCentered) _gracefulPanToUser(false);
+    _syncConeRotation();
+    _bearingRafId = requestAnimationFrame(_bearingStep);
+}
+
+function _smoothSetBearing(target) {
+    // Record the magnitude of this new rotation for adaptive settling
+    const newDelta = Math.abs(_normDelta(_bearingCurrent, target));
+    if (newDelta > _bearingOriginDelta) _bearingOriginDelta = newDelta;
+    _bearingTarget = target;
+    if (_bearingPaused) return; // stash target; will resume after flyTo
+    if (!_bearingRafId) {
+        _bearingRafId = requestAnimationFrame(_bearingStep);
+    }
+}
+
+function _updateUserHeading(degrees) {
+    if (degrees === null || degrees === undefined) return;
+    _userHeading = degrees;
+
+    // In walk mode, smoothly rotate the map so user's heading points "up"
+    if (_walkMode && map) {
+        _smoothSetBearing(-degrees);
+    }
+
+    // Update the cone visual direction
+    _syncConeRotation();
+}
+
+function _startCompassTracking() {
+    if (_headingWatchActive) return;
+    if (!isMobileView()) return;
+
+    const handler = (e) => {
+        // iOS provides webkitCompassHeading (degrees from magnetic north)
+        // Android provides e.alpha (0-360, but inverted — compass heading = 360 - alpha)
+        let heading = null;
+        if (typeof e.webkitCompassHeading === 'number') {
+            heading = e.webkitCompassHeading;
+        } else if (typeof e.alpha === 'number' && e.absolute) {
+            heading = (360 - e.alpha) % 360;
+        }
+        if (heading !== null) _updateUserHeading(heading);
+    };
+
+    // iOS 13+ requires explicit permission
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission().then(state => {
+            if (state === 'granted') {
+                window.addEventListener('deviceorientationabsolute', handler, true);
+                window.addEventListener('deviceorientation', handler, true);
+                _headingWatchActive = true;
+            }
+        }).catch(() => {});
+    } else if ('DeviceOrientationEvent' in window) {
+        window.addEventListener('deviceorientationabsolute', handler, true);
+        window.addEventListener('deviceorientation', handler, true);
+        _headingWatchActive = true;
+    }
+}
+
+// ── Walk mode toggle ──
+function _setWalkMode(on) {
+    _walkMode = on;
+    const walkBtn = document.querySelector('.leaflet-control-walk-view-btn');
+    if (walkBtn) {
+        walkBtn.innerHTML = on
+            ? '<i class="fas fa-glasses"></i>'
+            : '<i class="fas fa-walking"></i>';
+        walkBtn.title = on ? 'Standard view' : 'Walk view';
+        walkBtn.setAttribute('aria-label', walkBtn.title);
+        walkBtn.classList.toggle('walk-active', on);
+    }
+    _updateCompassResetBtnState();
+    if (on) {
+        // Disable manual rotation — walk mode controls bearing automatically
+        if (map.touchRotate && map.touchRotate.disable) map.touchRotate.disable();
+        // Start compass if not already running
+        _startCompassTracking();
+        // Snap bearing instantly for mode transition (rAF would fight flyTo)
+        if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
+        if (_userHeading !== null && typeof map.setBearing === 'function') {
+            map.setBearing(-_userHeading);
+            _bearingCurrent = -_userHeading;
+            _bearingTarget = -_userHeading;
+        }
+        _bearingOriginDelta = 0;
+        _syncConeRotation();
+        // Center user in visible canvas (header-aware, bearing-aware)
+        _walkCentered = true;
+        _gracefulPanToUser(true);
+    } else {
+        // Re-enable manual rotation
+        if (map.touchRotate && map.touchRotate.enable) map.touchRotate.enable();
+        // Snap bearing to north for mode transition (rAF would fight flyTo)
+        if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
+        if (typeof map.setBearing === 'function') {
+            map.setBearing(0);
+            _bearingCurrent = 0;
+            _bearingTarget = 0;
+        }
+        _bearingOriginDelta = 0;
+        _walkCentered = false;
+        _syncConeRotation();
+        // Recenter with header offset (standard mode uses visual center)
+        _gracefulPanToUser();
+    }
+}
+
+// ── Graceful recenter on user with header-offset compensation ──
+// Uses container-point math (latLngToContainerPoint + panBy) which is
+// bearing-aware — works correctly even when the map is rotated (walk mode).
+// Accounts for the header and any bottom overlay in screen coordinates.
+function _gracefulPanToUser(animate) {
+    if (animate === undefined) animate = true;
     const loc = window._userLatLng;
     if (!loc) return;
 
-    // Remove existing marker if present
-    if (userLocationMarker && map.hasLayer(userLocationMarker)) {
-        map.removeLayer(userLocationMarker);
+    const mapEl = document.getElementById('map');
+    if (!mapEl) { map.panTo(loc, { animate: animate }); return; }
+
+    const headerH = getMobileHeaderPad();
+    const fullH = mapEl.offsetHeight;
+    const fullW = mapEl.offsetWidth;
+
+    // Determine overlay height from current state
+    let overlayH = 0;
+    const sidebar = document.getElementById('results-sidebar');
+    if (sidebar) {
+        if (document.body.classList.contains('results-open')) {
+            overlayH = fullH * 0.5;
+        } else if (document.body.classList.contains('results-peeked')) {
+            overlayH = TOASTER_LIP_HEIGHT;
+        }
     }
 
-    const lat = loc[0];
-    const lng = loc[1];
+    // Visible canvas center in container (screen) coordinates
+    const visibleTop = headerH;
+    const visibleBottom = fullH - overlayH;
+    const targetX = fullW / 2;
+    const targetY = (visibleTop + visibleBottom) / 2;
 
-    userLocationMarker = L.marker([lat, lng], {
+    // Where is the user GPS point currently on screen?
+    const ll = L.latLng(loc[0], loc[1]);
+    const pt = map.latLngToContainerPoint(ll);
+
+    const dx = pt.x - targetX;
+    const dy = pt.y - targetY;
+
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return; // already centered
+
+    if (animate) {
+        map.panBy([dx, dy], { animate: true, duration: 0.6, easeLinearity: 0.25 });
+    } else {
+        map.panBy([dx, dy], { animate: false });
+    }
+}
+
+// ── Compass / recenter button state ──
+function _updateCompassResetBtnState() {
+    const btn = document.querySelector('.leaflet-control-compass-reset-btn');
+    if (!btn) return;
+    if (_walkMode) {
+        // In walk mode: becomes a recenter button
+        btn.innerHTML = '<i class="fas fa-dot-circle"></i>';
+        btn.title = 'Recenter';
+        btn.classList.remove('compass-disabled');
+    } else {
+        btn.innerHTML = '<i class="fas fa-compass"></i>';
+        btn.title = 'Reset north';
+        btn.classList.remove('compass-disabled');
+    }
+    btn.setAttribute('aria-label', btn.title);
+}
+
+function _ensureUserMarkerOnMap() {
+    const loc = window._userLatLng;
+    if (!loc) return;
+
+    if (userLocationMarker && map.hasLayer(userLocationMarker)) {
+        // Already on map — just update position
+        userLocationMarker.setLatLng(loc);
+        return;
+    }
+
+    // Create marker
+    if (userLocationMarker) {
+        // Marker exists but not on map — re-add
+        userLocationMarker.setLatLng(loc);
+        userLocationMarker.addTo(map);
+        return;
+    }
+
+    // First-time creation
+    userLocationMarker = L.marker(loc, {
         icon: L.divIcon({
             className: 'user-location-marker',
-            html: '<div style="width:36px;height:36px;border-radius:50%;background:#10b981;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.35);border:2px solid #fff;">'
-                + '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="white">'
-                + '<path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>'
-                + '</svg></div>',
-            iconSize: [36, 36],
-            iconAnchor: [18, 18]
+            html: _buildUserMarkerHtml(),
+            iconSize: _userMarkerIconSize(),
+            iconAnchor: _userMarkerIconAnchor()
         }),
         interactive: true,
         zIndexOffset: 900
     }).addTo(map);
 
+    const lat = loc[0];
+    const lng = loc[1];
     const coordStr = lat.toFixed(5) + ', ' + lng.toFixed(5);
     userLocationMarker.bindPopup(
         '<div style="text-align:center;">'
@@ -1464,13 +1939,19 @@ function addUserLocationMarker() {
     userLocationMarker.on('click', () => {
         userLocationMarker.openPopup();
     });
+
+    // Start compass tracking on first marker placement (mobile only)
+    _startCompassTracking();
+}
+
+function addUserLocationMarker() {
+    setUserMarkerMode('active');
+    _ensureUserMarkerOnMap();
 }
 
 function removeUserLocationMarker() {
-    if (userLocationMarker) {
-        if (map.hasLayer(userLocationMarker)) map.removeLayer(userLocationMarker);
-        userLocationMarker = null;
-    }
+    // Don't remove — downgrade to idle dot
+    setUserMarkerMode('idle');
 }
 
 // =============================================================================
@@ -1742,6 +2223,7 @@ function drawClear() {
     } else {
         isPinchZoom = false;
         updateZoomLevelIndicator();
+        updateDrawButtonState();
     }
 
     // Clear scroll-container constraint
@@ -3361,6 +3843,7 @@ async function fetchNearbyPlaces(includedTypes, circle, rankPreference = 'POPULA
                     phone: gp.internationalPhoneNumber || null,
                     website: gp.websiteUri || null,
                     googleMapsUri: googleMapsUri,
+                    openNow: gp.currentOpeningHours?.openNow ?? null,
                     // Backward-compatible google sub-object for card/popup rendering
                     google: {
                         rating: rating,
@@ -3447,6 +3930,7 @@ async function fetchTextSearchPlaces(textQuery, center, radiusM = 8000, maxResul
                     phone: gp.internationalPhoneNumber || null,
                     website: gp.websiteUri || null,
                     googleMapsUri: googleMapsUri,
+                    openNow: gp.currentOpeningHours?.openNow ?? null,
                     google: {
                         rating: rating,
                         userRatingCount: userRatingCount,
@@ -3833,9 +4317,14 @@ function createPlaceCard(place, index) {
 
     // ── Card field HTML — always present for uniform height ──
     const hasRating = place.google && place.google.rating;
+    const openStatusHtml = place.openNow === true
+        ? '<span class="open-status is-open">Open</span>'
+        : place.openNow === false
+            ? '<span class="open-status is-closed">Closed</span>'
+            : '';
     const ratingHtml = hasRating
-        ? `<i class="fas fa-star"></i> ${place.google.rating.toFixed(1)}${place.google.userRatingCount ? ` <span class="rating-count">(${place.google.userRatingCount})</span>` : ''}`
-        : '<i class="fas fa-star"></i> <span class="unavailable">Unavailable</span>';
+        ? `<i class="fas fa-star"></i> ${place.google.rating.toFixed(1)}${place.google.userRatingCount ? ` <span class="rating-count">(${place.google.userRatingCount})</span>` : ''}${openStatusHtml}`
+        : `<i class="fas fa-star"></i> <span class="unavailable">Unavailable</span>${openStatusHtml}`;
 
     const websiteHtml = place.website
         ? `<a href="${place.website}" target="_blank" rel="noopener" style="color:#4285f4;text-decoration:none;"><span><i class="fas fa-globe"></i> Website</span></a>`
@@ -4052,7 +4541,16 @@ function _pinCenterForOverlay(latLng, targetZoom) {
 
     const ll = latLng instanceof L.LatLng ? latLng : L.latLng(latLng[0], latLng[1]);
     const pinPx = map.project(ll, targetZoom);
-    return map.unproject(L.point(pinPx.x, pinPx.y + offsetPx), targetZoom);
+
+    // Rotate the offset vector by the current map bearing so it always
+    // shifts in the "screen-down" direction regardless of map rotation.
+    // When bearing = 0 this reduces to the original pure-Y offset.
+    const bearing = _getMapBearing();
+    const rad = bearing * Math.PI / 180;
+    const dx = offsetPx * Math.sin(rad);
+    const dy = offsetPx * Math.cos(rad);
+
+    return map.unproject(L.point(pinPx.x + dx, pinPx.y + dy), targetZoom);
 }
 
 /**
@@ -4758,7 +5256,7 @@ const _CATEGORY_MAP = {
 };
 
 // Suffixes to strip before matching (e.g. "sushi near me" → "sushi")
-const _CATEGORY_STRIP_RE = /\s+(near\s+me|nearby|close\s+by|around\s+here|restaurant|restaurants|place|places|shop|shops|store|stores)$/i;
+const _CATEGORY_STRIP_RE = /\s+(near\s+me|nearby|close\s+by|around\s+here|restaurant|restaurants|food|foods|cuisine|place|places|shop|shops|store|stores)$/i;
 
 /**
  * Check if a search query matches a generic category.
@@ -4767,7 +5265,9 @@ const _CATEGORY_STRIP_RE = /\s+(near\s+me|nearby|close\s+by|around\s+here|restau
 function _matchCategory(query) {
     if (_looksLikeAddress(query)) return null;
     let q = query.trim().toLowerCase();
-    // Strip common suffixes like "near me", "restaurant", etc.
+    // Check exact match first — protects entries like "fast food" before stripping
+    if (_CATEGORY_MAP[q]) return _CATEGORY_MAP[q];
+    // Strip common suffixes like "near me", "restaurant", "food", etc.
     q = q.replace(_CATEGORY_STRIP_RE, '').trim();
     // Also strip a second pass (e.g. "sushi restaurant near me" → "sushi restaurant" → "sushi")
     q = q.replace(_CATEGORY_STRIP_RE, '').trim();
@@ -4938,6 +5438,16 @@ async function searchAddress() {
         await new Promise(resolve => setTimeout(resolve, waitTime));
     }
     lastSearchTime = Date.now();
+
+    // ── Clear previous search results — new search = clean slate ──
+    if (markers.length > 0 || currentPolygon || allSearchResults.length > 0 || searchAddressMarker) {
+        drawClear();
+        // drawClear preserves searchAddressMarker — remove it too
+        if (searchAddressMarker) {
+            if (map.hasLayer(searchAddressMarker)) map.removeLayer(searchAddressMarker);
+            searchAddressMarker = null;
+        }
+    }
 
     // Use the user's actual GPS location for proximity ranking, not the
     // map center (which may have moved to a previous search result).
@@ -5126,18 +5636,27 @@ async function searchAddress() {
                 );
 
                 if (textResults.length > 0) {
-                    // Pick the closest result by distance to map center
-                    let best = textResults[0];
-                    let bestDist = Infinity;
+                    // Pick the best result: prefer open + closest.
+                    // Among candidates, an open place beats a closer closed one
+                    // (e.g. the open McDonald's 0.5 mi away > closed one 0.2 mi).
+                    // When openNow is unknown (null) treat as neutral.
                     for (const r of textResults) {
-                        if (!r.coordinates) continue;
-                        const d = calculateDistance(
+                        if (!r.coordinates) { r._dist = Infinity; continue; }
+                        r._dist = calculateDistance(
                             [mapCenter.lat, mapCenter.lng],
                             [r.coordinates[0], r.coordinates[1]]
                         );
-                        if (d < bestDist) { bestDist = d; best = r; }
                     }
-                    console.log(`[searchAddress] Google Text Search "${address}" → ${textResults.length} candidates, closest: "${best.name}" [${best.coordinates}] (${(bestDist/1000).toFixed(1)}km)`);
+                    textResults.sort((a, b) => {
+                        // Open places first (true > null > false)
+                        const oa = a.openNow === true ? 0 : a.openNow === false ? 2 : 1;
+                        const ob = b.openNow === true ? 0 : b.openNow === false ? 2 : 1;
+                        if (oa !== ob) return oa - ob;
+                        return a._dist - b._dist;
+                    });
+                    const best = textResults[0];
+                    const bestDist = best._dist;
+                    console.log(`[searchAddress] Google Text Search "${address}" → ${textResults.length} candidates, best: "${best.name}" [${best.coordinates}] (${(bestDist/1000).toFixed(1)}km, openNow=${best.openNow})`);
 
                     // Convert to Nominatim-like result for displayGeocodeResult
                     const geoResult = {
@@ -6465,8 +6984,10 @@ function clearAll() {
     removeWildPin();
     updateWildPinButtonState();
 
-    // Remove person marker
+    // Downgrade person marker to idle dot (don't remove — always visible)
     removeUserLocationMarker();
+    // Exit walk mode if active
+    if (_walkMode) _setWalkMode(false);
 
     // Clear address input and hide X button
     const addrInput = document.getElementById('address-input');
@@ -6507,6 +7028,8 @@ function clearAll() {
     //       Previous sweep missed L.Popup — that was the actual lingering artifact.
     const strayLayers = [];
     map.eachLayer((layer) => {
+        // Never remove the user location marker — it must always stay visible
+        if (layer === userLocationMarker) return;
         if (layer instanceof L.Marker || layer instanceof L.Popup) {
             strayLayers.push(layer);
         }
@@ -6556,15 +7079,30 @@ function clearAll() {
     const lasoBtnClear = document.getElementById('lasosearch-btn');
     if (lasoBtnClear) lasoBtnClear.classList.remove('shimmer');
 
-    // Snap zoom to nearest integer (cleans up fractional fit-zoom)
-    const currentZ = map.getZoom();
-    if (!Number.isInteger(currentZ)) {
-        _buttonZoomPending = true;
-        map.setZoom(Math.round(currentZ), { animate: true });
+    // Fly to user location at default zoom (same as Current Location centering)
+    const defaultZoom = 14 + (isMobileView() ? 2 : 3);
+    if (window._userLatLng) {
+        // Snap bearing to north first
+        if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
+        if (typeof map.setBearing === 'function') {
+            map.setBearing(0);
+            _bearingCurrent = 0;
+            _bearingTarget = 0;
+        }
+        _bearingOriginDelta = 0;
+        _syncConeRotation();
+        const clearTarget = _pinCenterForOverlay(window._userLatLng, defaultZoom);
+        map.flyTo(clearTarget, defaultZoom, { animate: true, duration: 0.8 });
     } else {
-        // Zoom is already integer — ensure indicator is visible
-        isPinchZoom = false;
-        updateZoomLevelIndicator();
+        // No user location — just snap zoom to nearest integer
+        const currentZ = map.getZoom();
+        if (!Number.isInteger(currentZ)) {
+            _buttonZoomPending = true;
+            map.setZoom(Math.round(currentZ), { animate: true });
+        } else {
+            isPinchZoom = false;
+            updateZoomLevelIndicator();
+        }
     }
 
     // Clear scroll-container constraint
@@ -7256,8 +7794,12 @@ function updateZoomLevelIndicator() {
 
     // Update hint text
     if (hintEl) {
-        if (isFitZoom) {
+        if (isFitZoom && canDraw) {
             hintEl.textContent = '(fit)';
+        } else if (isFitZoom && !canDraw) {
+            // Category fit zoom is below draw threshold — tell user how many levels
+            const needed = Math.ceil(minZoomToDraw - currentZoomLevel);
+            hintEl.textContent = `(+${needed} to draw)`;
         } else if (canDraw) {
             hintEl.textContent = '(ready to draw)';
         } else {

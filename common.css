@@ -402,6 +402,15 @@ body {
     color: var(--primary-color);
 }
 
+/* Fit-zoom below draw threshold (category search zoomed out): danger color */
+.zoom-level-indicator.fit-zoom.cannot-draw .zoom-value {
+    color: var(--danger-color);
+}
+
+.zoom-level-indicator.fit-zoom.cannot-draw .zoom-min-hint {
+    color: var(--danger-color);
+}
+
 /* =============================================================================
    Buttons
    ============================================================================= */
@@ -853,6 +862,165 @@ body.preload * {
     font-size: 0.75rem;
 }
 
+/* =============================================================================
+   User Location Marker — person dot with optional compass heading cone
+   Two modes:
+     • Idle  (.user-location-dot-sm) — tiny green dot, always visible
+     • Active (.user-location-dot)   — full person icon during search
+   ============================================================================= */
+
+.user-location-marker {
+    background: none !important;
+    border: none !important;
+    overflow: visible !important;
+}
+
+/* ── Active mode (full person icon) ── */
+.user-location-dot {
+    position: relative;
+    width: 60px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
+}
+
+.user-location-inner {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: #10b981;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+    border: 2px solid #fff;
+    position: relative;
+    z-index: 2;
+}
+
+/* ── High-beam heading cone (Apple Maps style) ──
+   A 45° conic-gradient sector with radial fade, centered on the dot.
+   The cone container is 2× the dot container so the beam extends outward.
+   A radial mask cuts out the center (where the dot sits) and fades the
+   outer edge, creating the "headlight" glow effect.                      */
+.user-heading-cone {
+    position: absolute;
+    top: -30px;
+    left: -30px;
+    width: 120px;
+    height: 120px;
+    z-index: 1;
+    pointer-events: none;
+    transform-origin: center center;
+    border-radius: 50%;
+}
+
+.user-heading-cone::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: conic-gradient(
+        from 337.5deg at 50% 50%,
+        transparent 0deg,
+        rgba(16, 185, 129, 0.7) 5deg,
+        rgba(16, 185, 129, 0.7) 40deg,
+        transparent 45deg,
+        transparent 360deg
+    );
+    -webkit-mask: radial-gradient(circle closest-side at center,
+        transparent 28%, black 34%, rgba(0,0,0,0.5) 58%, transparent 88%);
+    mask: radial-gradient(circle closest-side at center,
+        transparent 28%, black 34%, rgba(0,0,0,0.5) 58%, transparent 88%);
+}
+
+/* ── Idle mode (green dot — doubled size for visibility) ── */
+.user-location-dot-sm {
+    width: 48px;
+    height: 48px;
+}
+
+.user-location-inner-sm {
+    width: 28px;
+    height: 28px;
+    border-width: 2px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+
+.user-heading-cone-sm {
+    top: -24px;
+    left: -24px;
+    width: 96px;
+    height: 96px;
+}
+
+/* ── Walk View button ── */
+.leaflet-control-walk-view {
+    margin-top: 6px !important;
+}
+
+.leaflet-control-walk-view-btn {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    font-size: 14px;
+    color: #333;
+    cursor: pointer;
+}
+
+.leaflet-control-walk-view-btn.walk-active {
+    background: #10b981 !important;
+    color: #fff;
+}
+
+/* ── Compass reset button ── */
+.leaflet-control-compass-reset {
+    margin-top: 2px !important;
+}
+
+.leaflet-control-compass-reset-btn {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    font-size: 14px;
+    color: #333;
+    cursor: pointer;
+}
+
+/* compass-disabled class kept for potential future use */
+
+/* Hide leaflet-rotate's built-in compass control — we use our own button */
+.leaflet-control-rotate {
+    display: none !important;
+}
+
+/* =============================================================================
+   Open/Closed status on result cards
+   ============================================================================= */
+
+.place-rating .open-status {
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-left: 6px;
+}
+
+.place-rating .open-status.is-open {
+    color: var(--secondary-color);
+}
+
+.place-rating .open-status.is-closed {
+    color: var(--danger-color);
+}
+
 .place-type {
     display: inline-block;
     font-size: 0.7rem;
@@ -1076,13 +1244,15 @@ body.preload * {
     }
 }
 
-#lasosearch-btn.shimmer {
+#lasosearch-btn.shimmer,
+.leaflet-control-zoom-in.shimmer {
     position: relative;
     overflow: hidden;
     min-width: fit-content;
 }
 
-#lasosearch-btn.shimmer::after {
+#lasosearch-btn.shimmer::after,
+.leaflet-control-zoom-in.shimmer::after {
     content: '';
     position: absolute;
     inset: 0;
