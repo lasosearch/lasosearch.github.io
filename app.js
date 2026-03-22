@@ -997,20 +997,21 @@ function initMap() {
             L.DomEvent.on(btn, 'click', (e) => {
                 L.DomEvent.preventDefault(e);
                 if (_walkMode) {
-                    // Walk mode: smooth flyTo recenter (same animation as Current Location)
+                    // Walk mode: smooth flyTo recenter + smooth bearing catch-up
                     if (!window._userLatLng) return;
                     _bearingPaused = true;
                     if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
+                    // Compute flyTarget for the heading we'll land at
+                    const targetBearing = (_userHeading !== null) ? -_userHeading : _getMapBearing();
                     const wz = map.getZoom();
-                    const wTarget = _pinCenterForOverlay(window._userLatLng, wz);
+                    const wTarget = _pinCenterForOverlay(window._userLatLng, wz, targetBearing);
                     map.flyTo(wTarget, wz, { animate: true, duration: 0.6, easeLinearity: 0.25 });
                     map.once('moveend', () => {
                         _bearingPaused = false;
                         _walkCentered = true;
-                        if (_userHeading !== null && typeof map.setBearing === 'function') {
-                            map.setBearing(-_userHeading);
-                            _bearingCurrent = -_userHeading;
-                            _bearingTarget = -_userHeading;
+                        // Smooth bearing catch-up (not instant snap)
+                        if (_userHeading !== null) {
+                            _smoothSetBearing(-_userHeading);
                         }
                         _syncConeRotation();
                     });
@@ -1724,6 +1725,46 @@ function _bearingStep() {
     _bearingRafId = requestAnimationFrame(_bearingStep);
 }
 
+// ── Time-based easeInOut bearing animation for mode transitions ──
+// Separate from the walk-mode adaptive rAF loop — uses a fixed duration
+// with cubic easeInOut so transitions feel graceful, not jarring.
+// _normDelta guarantees shortest path (never > 180°).
+function _transitionBearing(targetBearing, duration, callback) {
+    if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
+    const from = _bearingCurrent;
+    const delta = _normDelta(from, targetBearing);
+    if (Math.abs(delta) < 0.5) {
+        // Already there
+        _bearingCurrent = targetBearing;
+        _bearingTarget = targetBearing;
+        if (typeof map.setBearing === 'function') map.setBearing(targetBearing);
+        _syncConeRotation();
+        if (callback) callback();
+        return;
+    }
+    const start = performance.now();
+    function step(now) {
+        let t = (now - start) / duration;
+        if (t >= 1) t = 1;
+        // Cubic easeInOut: gradual start, faster middle, gradual end
+        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        _bearingCurrent = from + delta * ease;
+        _bearingCurrent = ((_bearingCurrent + 540) % 360) - 180;
+        if (typeof map.setBearing === 'function') map.setBearing(_bearingCurrent);
+        _syncConeRotation();
+        if (t < 1) {
+            _bearingRafId = requestAnimationFrame(step);
+        } else {
+            _bearingCurrent = targetBearing;
+            _bearingTarget = targetBearing;
+            _bearingRafId = null;
+            _bearingOriginDelta = 0;
+            if (callback) callback();
+        }
+    }
+    _bearingRafId = requestAnimationFrame(step);
+}
+
 function _smoothSetBearing(target) {
     // Record the magnitude of this new rotation for adaptive settling
     const newDelta = Math.abs(_normDelta(_bearingCurrent, target));
@@ -1799,33 +1840,29 @@ function _setWalkMode(on) {
         if (map.touchRotate && map.touchRotate.disable) map.touchRotate.disable();
         // Start compass if not already running
         _startCompassTracking();
-        // Snap bearing instantly for mode transition (rAF would fight flyTo)
-        if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
-        if (_userHeading !== null && typeof map.setBearing === 'function') {
-            map.setBearing(-_userHeading);
-            _bearingCurrent = -_userHeading;
-            _bearingTarget = -_userHeading;
+        // Graceful easeInOut transition: flyTo + bearing over 600ms
+        const targetBearing = (_userHeading !== null) ? -_userHeading : 0;
+        const wz = map.getZoom();
+        const loc = window._userLatLng;
+        if (loc) {
+            const flyTarget = _pinCenterForOverlay(loc, wz, targetBearing);
+            map.flyTo(flyTarget, wz, { animate: true, duration: 0.6, easeLinearity: 0.25 });
         }
-        _bearingOriginDelta = 0;
-        _syncConeRotation();
-        // Center user in visible canvas (header-aware, bearing-aware)
-        _walkCentered = true;
-        _gracefulPanToUser(true);
+        _transitionBearing(targetBearing, 600, () => {
+            _walkCentered = true;
+        });
     } else {
         // Re-enable manual rotation
         if (map.touchRotate && map.touchRotate.enable) map.touchRotate.enable();
-        // Snap bearing to north for mode transition (rAF would fight flyTo)
-        if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
-        if (typeof map.setBearing === 'function') {
-            map.setBearing(0);
-            _bearingCurrent = 0;
-            _bearingTarget = 0;
-        }
-        _bearingOriginDelta = 0;
         _walkCentered = false;
-        _syncConeRotation();
-        // Recenter with header offset (standard mode uses visual center)
-        _gracefulPanToUser();
+        // Graceful easeInOut transition: flyTo + bearing back to north over 600ms
+        const wz = map.getZoom();
+        const loc = window._userLatLng;
+        if (loc) {
+            const flyTarget = _pinCenterForOverlay(loc, wz, 0);
+            map.flyTo(flyTarget, wz, { animate: true, duration: 0.6, easeLinearity: 0.25 });
+        }
+        _transitionBearing(0, 600);
     }
 }
 
@@ -4513,7 +4550,7 @@ function clearHighlightedMarker() {
  * Returns the original latLng unchanged when no overlay is active or
  * on desktop (where there is no bottom-sheet overlay).
  */
-function _pinCenterForOverlay(latLng, targetZoom) {
+function _pinCenterForOverlay(latLng, targetZoom, bearingOverride) {
     if (!isMobileView()) return latLng;
     const mapEl = document.getElementById('map');
     if (!mapEl) return latLng;
@@ -4542,10 +4579,11 @@ function _pinCenterForOverlay(latLng, targetZoom) {
     const ll = latLng instanceof L.LatLng ? latLng : L.latLng(latLng[0], latLng[1]);
     const pinPx = map.project(ll, targetZoom);
 
-    // Rotate the offset vector by the current map bearing so it always
+    // Rotate the offset vector by the map bearing so it always
     // shifts in the "screen-down" direction regardless of map rotation.
     // When bearing = 0 this reduces to the original pure-Y offset.
-    const bearing = _getMapBearing();
+    // bearingOverride lets callers compute the offset for a future bearing.
+    const bearing = (bearingOverride !== undefined) ? bearingOverride : _getMapBearing();
     const rad = bearing * Math.PI / 180;
     const dx = offsetPx * Math.sin(rad);
     const dy = offsetPx * Math.cos(rad);
