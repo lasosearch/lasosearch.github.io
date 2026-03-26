@@ -691,12 +691,10 @@ function initMap() {
         renderer: L.canvas()  // Use Canvas instead of SVG for better performance with large polygons
     });
 
-    // Standard mode starts with touchRotate disabled so two-finger pinch
-    // rotation never fires setBearing() during zoom — that would trigger
-    // Renderer._update() every frame, fighting the CSS-transform-based
-    // _updateTransform() and causing the polygon to lag/freeze.
-    // Walk mode also keeps touchRotate disabled (see _setWalkMode).
-    if (map.touchRotate && map.touchRotate.disable) map.touchRotate.disable();
+    // touchRotate is enabled in standard mode (two-finger map rotation).
+    // Walk mode disables it (compass controls bearing automatically).
+    // During pinch zoom, zoomstart temporarily disables it to prevent
+    // polygon rendering lag; zoomend re-enables it.
 
     // Custom zoom control using Font Awesome icons — SVG glyphs are inherently centered
     L.control.zoom({
@@ -1171,15 +1169,11 @@ function initMap() {
             if (_bearingRafId) { cancelAnimationFrame(_bearingRafId); _bearingRafId = null; }
             _bearingPausedForZoom = true;  // remember we paused it
         }
-        // In standard mode, disable touchRotate during zoom so accidental
-        // pinch rotation doesn't fight the zoom CSS transform.
+        // In standard mode, disable touchRotate during zoom so pinch
+        // rotation doesn't fight the zoom CSS transform.
         if (!_walkMode && !_touchRotateDisabledForZoom && map.touchRotate && map.touchRotate.disable) {
             map.touchRotate.disable();
             _touchRotateDisabledForZoom = true;
-            // Snap any accidental rotation back to north
-            if (typeof map.setBearing === 'function' && Math.abs(_getMapBearing()) > 0.01) {
-                map.setBearing(0);
-            }
         }
         // Only close popup during auto-fit — let user zooms keep the popup in place
         if (isAutoFittingPolygon) {
@@ -1206,15 +1200,13 @@ function initMap() {
             _bearingPaused = false;
             if (_walkMode && _userHeading !== null) _smoothSetBearing(-_userHeading);
         }
-        // Clear the flag but keep touchRotate disabled in standard mode —
-        // re-enabling it would let the next pinch trigger setBearing() calls
-        // that cause polygon rendering lag (see comment at map init).
+        // Re-enable touchRotate in standard mode now that zoom is done.
+        // (Walk mode keeps it disabled — compass controls bearing.)
         if (_touchRotateDisabledForZoom) {
             _touchRotateDisabledForZoom = false;
-        }
-        // Snap any residual bearing drift to north in standard mode
-        if (!_walkMode && typeof map.setBearing === 'function' && Math.abs(_getMapBearing()) > 0.01) {
-            map.setBearing(0);
+            if (!_walkMode && map.touchRotate && map.touchRotate.enable) {
+                map.touchRotate.enable();
+            }
         }
         // ── Diagnostic: renderer state at zoomend ──
         if (currentPolygon && currentPolygon._renderer) {
@@ -1997,9 +1989,8 @@ function _setWalkMode(on) {
             _walkCentered = true;
         });
     } else {
-        // Keep touchRotate disabled in standard mode — re-enabling it would
-        // let TouchGestures call setBearing() during pinch zoom, causing
-        // Renderer._update() to fight _updateTransform() and lag the polygon.
+        // Re-enable manual rotation in standard mode
+        if (map.touchRotate && map.touchRotate.enable) map.touchRotate.enable();
         _walkCentered = false;
         // Graceful easeInOut transition: flyTo + bearing back to north over 600ms
         const wz = map.getZoom();
