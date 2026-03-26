@@ -883,6 +883,7 @@ function initMap() {
                         _bearingTarget = 0;
                     }
                     _bearingOriginDelta = 0;
+                    _microRampStart = 0;
                     _syncConeRotation();
                 }
                 // Pause bearing updates during flyTo so animation is smooth
@@ -1068,6 +1069,7 @@ function initMap() {
                     _bearingTarget = 0;
                 }
                 _bearingOriginDelta = 0;
+                _microRampStart = 0;
                 _syncConeRotation();
                 const currentZoom = map.getZoom();
                 const flyTarget = _pinCenterForOverlay(window._userLatLng, currentZoom);
@@ -1702,6 +1704,8 @@ let _bearingTarget = 0;
 let _bearingCurrent = 0;
 let _bearingRafId = null;
 let _bearingOriginDelta = 0;  // magnitude of the rotation that started this animation
+let _microRampStart = 0;      // rAF timestamp when current micro-ramp began
+let _microRampSign = 0;       // sign (+1/−1) of delta when ramp started
 
 function _getMapBearing() {
     return (map && typeof map.getBearing === 'function') ? map.getBearing() : 0;
@@ -1780,7 +1784,7 @@ function _normDelta(from, to) {
     return ((to - from + 540) % 360) - 180;
 }
 
-function _bearingStep() {
+function _bearingStep(timestamp) {
     if (_bearingPaused) { _bearingRafId = null; return; }
     const delta = _normDelta(_bearingCurrent, _bearingTarget);
     const absDelta = Math.abs(delta);
@@ -1794,6 +1798,7 @@ function _bearingStep() {
         _syncConeRotation();
         _bearingRafId = null;
         _bearingOriginDelta = 0;
+        _microRampStart = 0;
         return;
     }
 
@@ -1805,22 +1810,39 @@ function _bearingStep() {
     // After a large swing (origin > 45°), the micro tail uses a gentler
     // settling factor so the last few degrees ease in gracefully rather
     // than snapping — gives the "we're precisely following you" feel.
+    //
+    // For truly tiny gestures (origin < 3°), ramp the factor from near-zero
+    // to responsive over 120ms — smooth ease-in instead of an abrupt tick.
     let factor;
     if (absDelta < 12.5) {
         if (_bearingOriginDelta > 45) {
             // Settling after a big turn — gentle micro ease
             factor = 0.12;
+            _microRampStart = 0;
+        } else if (_bearingOriginDelta < 3) {
+            // Pure micro gesture — ramp factor for smooth ease-in
+            const sign = delta > 0 ? 1 : -1;
+            if (_microRampStart === 0 || sign !== _microRampSign) {
+                _microRampStart = timestamp;
+                _microRampSign = sign;
+            }
+            const rampT = Math.min((timestamp - _microRampStart) / 120, 1);
+            factor = 0.04 + 0.26 * rampT * rampT;
         } else {
             // Pure micro rotation — responsive
             factor = 0.35;
+            _microRampStart = 0;
         }
     } else if (absDelta < 90) {
         factor = 0.14;
+        _microRampStart = 0;
     } else {
         factor = 0.07;
+        _microRampStart = 0;
     }
 
     _bearingCurrent += delta * factor;
+
     // Normalize to [-180, 180]
     _bearingCurrent = ((_bearingCurrent + 540) % 360) - 180;
     if (typeof map.setBearing === 'function') map.setBearing(_bearingCurrent);
@@ -1864,6 +1886,7 @@ function _transitionBearing(targetBearing, duration, callback) {
             _bearingTarget = targetBearing;
             _bearingRafId = null;
             _bearingOriginDelta = 0;
+            _microRampStart = 0;
             if (callback) callback();
         }
     }
@@ -1887,7 +1910,7 @@ function _updateUserHeading(degrees) {
 
     // In walk mode, smoothly rotate the map so user's heading points "up"
     if (_walkMode && map) {
-        _smoothSetBearing(-degrees);
+        _smoothSetBearing(-_userHeading);
     }
 
     // Update the cone visual direction
@@ -1898,16 +1921,33 @@ function _startCompassTracking() {
     if (_headingWatchActive) return;
     if (!isMobileView()) return;
 
-    const handler = (e) => {
-        // iOS provides webkitCompassHeading (degrees from magnetic north)
-        // Android provides e.alpha (0-360, but inverted — compass heading = 360 - alpha)
+    // iOS provides webkitCompassHeading on 'deviceorientation'.
+    // Android provides e.alpha on 'deviceorientationabsolute' (preferred) with
+    // 'deviceorientation' as fallback.  Listening to BOTH simultaneously causes
+    // the compass to alternate between two different heading values every frame,
+    // so we deduplicate: once an absolute event fires, ignore the non-absolute one.
+    let _gotAbsoluteEvent = false;
+
+    const absoluteHandler = (e) => {
+        _gotAbsoluteEvent = true;
         let heading = null;
-        if (typeof e.webkitCompassHeading === 'number') {
+        if (typeof e.webkitCompassHeading === 'number' && isFinite(e.webkitCompassHeading)) {
             heading = e.webkitCompassHeading;
-        } else if (typeof e.alpha === 'number' && e.absolute) {
+        } else if (typeof e.alpha === 'number' && isFinite(e.alpha) && e.absolute) {
             heading = (360 - e.alpha) % 360;
         }
-        if (heading !== null) _updateUserHeading(heading);
+        if (heading !== null && isFinite(heading)) _updateUserHeading(heading);
+    };
+
+    const fallbackHandler = (e) => {
+        if (_gotAbsoluteEvent) return; // absolute source is active — skip
+        let heading = null;
+        if (typeof e.webkitCompassHeading === 'number' && isFinite(e.webkitCompassHeading)) {
+            heading = e.webkitCompassHeading;
+        } else if (typeof e.alpha === 'number' && isFinite(e.alpha) && e.absolute) {
+            heading = (360 - e.alpha) % 360;
+        }
+        if (heading !== null && isFinite(heading)) _updateUserHeading(heading);
     };
 
     // iOS 13+ requires explicit permission
@@ -1915,14 +1955,14 @@ function _startCompassTracking() {
         typeof DeviceOrientationEvent.requestPermission === 'function') {
         DeviceOrientationEvent.requestPermission().then(state => {
             if (state === 'granted') {
-                window.addEventListener('deviceorientationabsolute', handler, true);
-                window.addEventListener('deviceorientation', handler, true);
+                window.addEventListener('deviceorientationabsolute', absoluteHandler, true);
+                window.addEventListener('deviceorientation', fallbackHandler, true);
                 _headingWatchActive = true;
             }
         }).catch(() => {});
     } else if ('DeviceOrientationEvent' in window) {
-        window.addEventListener('deviceorientationabsolute', handler, true);
-        window.addEventListener('deviceorientation', handler, true);
+        window.addEventListener('deviceorientationabsolute', absoluteHandler, true);
+        window.addEventListener('deviceorientation', fallbackHandler, true);
         _headingWatchActive = true;
     }
 }
@@ -7269,6 +7309,7 @@ function clearAll() {
             _bearingTarget = 0;
         }
         _bearingOriginDelta = 0;
+        _microRampStart = 0;
         _syncConeRotation();
         const clearTarget = _pinCenterForOverlay(window._userLatLng, defaultZoom);
         map.flyTo(clearTarget, defaultZoom, { animate: true, duration: 0.8 });
